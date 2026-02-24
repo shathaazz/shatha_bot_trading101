@@ -1,4 +1,3 @@
-Shetradingg, [07/09/47 08:34 م]
 import asyncio
 import os
 import logging
@@ -139,7 +138,7 @@ for j in range(highs[i - 1][0], len(df)):
 if df[“close”].iloc[j] > highs[i - 1][1]:
 return {“index”: j, “price”: highs[i - 1][1]}
 
-Shetradingg, [07/09/47 08:34 م]
+
 elif direction == “bearish” and len(lows) >= 2:
 for i in range(len(lows) - 1, 0, -1):
 if lows[i][1] < lows[i - 1][1]:
@@ -414,7 +413,7 @@ async def update_cmd(update, context):
 try:
 args = “ “.
 
-Shetradingg, [07/09/47 08:34 م]
+
 join(context.args)
 updated = []
     if "pnl=" in args:
