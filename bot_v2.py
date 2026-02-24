@@ -24,13 +24,13 @@ RIYADH_TZ = pytz.timezone('Asia/Riyadh')
 # ==================== إعدادات الحساب ====================
 
 ACCOUNT = {
-“balance”: 5000.0,
-“max_drawdown”: 10.0,
-“daily_drawdown”: 5.0,
-“drawdown_used”: 0.0,
-“daily_used”: 0.0,
-“trades_week”: 0,
-“pnl_percent”: 0.0,
+    "balance": 5000.0,
+    "max_drawdown": 10.0,
+    "daily_drawdown": 5.0,
+    "drawdown_used": 0.0,
+    "daily_used": 0.0,
+    "trades_week": 0,
+    "pnl_percent": 0.0,
 }
 
 SYMBOLS = {
