@@ -1,6 +1,5 @@
+python-telegram-bot
 yfinance
 pandas
-numpy
-python-telegram-bot==21.0
 pytz
 requests
