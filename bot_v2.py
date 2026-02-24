@@ -267,33 +267,29 @@ def calc_quality(dbos, idm, ob, sweep, weekly_match, daily_match, in_ob, has_new
     return max(0, min(100, score))
 
 
-def calc_entry_sl_tp(ob, direction, symbol):
+def calc_entry_sl_tp(ob, direction):
     """
-    حساب الدخول والستوب والأهداف
-    - الدخول: وسط الـ OB
-    - الستوب: تحت/فوق الـ OB بـ 10%
-    - الهدف: RR 1:2 و 1:3
+    الدخول: أعلى الـ OB (bullish) أو أسفله (bearish) = ليمت أوردر
+    الستوب: تحت الـ OB مباشرة (bullish) أو فوقه (bearish)
+    الأهداف: RR 1:2 و 1:4
     """
-    ob_mid = (ob["top"] + ob["bottom"]) / 2
     ob_range = ob["top"] - ob["bottom"]
-    sl_buffer = ob_range * 0.1  # 10% خارج الـ OB
+    sl_buffer = ob_range * 0.1  # هامش صغير تحت/فوق الـ OB
 
     if direction == "bullish":
-        entry = round(ob_mid, 5)
-        sl = round(ob["bottom"] - sl_buffer, 5)
+        entry = round(ob["top"], 5)           # ليمت عند أعلى الـ OB
+        sl = round(ob["bottom"] - sl_buffer, 5)  # ستوب تحت الـ OB
         risk = entry - sl
-        tp1 = round(entry + risk * 2.0, 5)
-        tp2 = round(entry + risk * 3.0, 5)
+        tp1 = round(entry + risk * 2.0, 5)   # هدف 1: RR 1:2
+        tp2 = round(entry + risk * 4.0, 5)   # هدف 2: RR 1:4
     else:
-        entry = round(ob_mid, 5)
-        sl = round(ob["top"] + sl_buffer, 5)
+        entry = round(ob["bottom"], 5)        # ليمت عند أسفل الـ OB
+        sl = round(ob["top"] + sl_buffer, 5)     # ستوب فوق الـ OB
         risk = sl - entry
-        tp1 = round(entry - risk * 2.0, 5)
-        tp2 = round(entry - risk * 3.0, 5)
+        tp1 = round(entry - risk * 2.0, 5)   # هدف 1: RR 1:2
+        tp2 = round(entry - risk * 4.0, 5)   # هدف 2: RR 1:4
 
-    rr1 = 2.0
-    rr2 = 3.0
-    return entry, sl, tp1, tp2, rr1, rr2
+    return entry, sl, tp1, tp2, 2.0, 4.0
 
 
 def get_risk_advice(quality):
@@ -386,7 +382,7 @@ def analyze(sym_name, yf_sym, tf, news):
     if quality < 60:
         return None
 
-    entry, sl, tp1, tp2, rr1, rr2 = calc_entry_sl_tp(ob, trend, sym_name)
+    entry, sl, tp1, tp2, rr1, rr2 = calc_entry_sl_tp(ob, trend)
 
     return {
         "symbol": sym_name,
@@ -437,11 +433,17 @@ def setup_msg(a):
         for ev in a["news"]["events"]:
             news_txt += f"  • {ev['title']} بعد {ev['hours']}س\n"
 
-    zone_txt = "⚡ السعر في الـ OB الحين!" if a["in_ob"] else f"⏳ انتظري السعر للمنطقة: {round(a['ob']['bottom'],4)} - {round(a['ob']['top'],4)}"
-
     risk_txt = f"❌ ما ندخل - {label}" if risk == 0 else f"💰 مخاطرة: {risk}% - {label}"
-
     tv = TRADINGVIEW_LINKS.get(a["symbol"], "https://www.tradingview.com")
+
+    if a["in_ob"]:
+        # السعر وصل الـ OB - دخول فوري
+        action_header = f"⚡ وصل الـ OB - ادخلي الحين!"
+        order_type = "دخول فوري (Market)"
+    else:
+        # ما وصل بعد - ليمت أوردر
+        action_header = f"⏳ ما وصل بعد - حطي ليمت أوردر"
+        order_type = f"ليمت أوردر عند: {a['entry']}"
 
     msg = f"{arrow} {direction} | {a['symbol']} | {a['tf']}\n"
     msg += "─────────────────\n"
@@ -450,12 +452,13 @@ def setup_msg(a):
         msg += "  ".join(extras) + "\n"
     msg += news_txt
     msg += "─────────────────\n"
-    msg += f"السعر: {round(a['current'], 4)}\n"
-    msg += f"🎯 دخول:   {a['entry']}\n"
-    msg += f"🛑 ستوب:   {a['sl']}\n"
-    msg += f"✅ هدف 1:  {a['tp1']}  (1:{a['rr1']})\n"
-    msg += f"🚀 هدف 2:  {a['tp2']}  (1:{a['rr2']})\n"
-    msg += f"{zone_txt}\n"
+    msg += f"{action_header}\n"
+    msg += f"📌 {order_type}\n"
+    msg += f"🛑 ستوب:   {a['sl']}  (تحت الـ OB)\n"
+    msg += f"✅ هدف 1:  {a['tp1']}  (1:2)\n"
+    msg += f"🚀 هدف 2:  {a['tp2']}  (1:4)\n"
+    msg += f"السعر الحالي: {round(a['current'], 4)}\n"
+    msg += f"منطقة OB: {round(a['ob']['bottom'],4)} - {round(a['ob']['top'],4)}\n"
     msg += "─────────────────\n"
     msg += f"جودة: {a['quality']}/100  {quality_bar}\n"
     msg += f"{risk_txt}\n"
