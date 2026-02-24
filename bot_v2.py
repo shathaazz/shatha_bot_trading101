@@ -195,30 +195,64 @@ def find_idm(df, dbos_idx, direction):
 
 def find_ob(df, idm_idx, direction):
     """
-    OB: آخر شمعة عكسية قبل الحركة القوية
-    - Bullish OB: آخر شمعة حمراء قبل IDM
-    - Bearish OB: آخر شمعة خضراء قبل IDM
-    نبحث في 10 شمعات فقط قبل IDM
+    OB: آخر شمعة عكسية أدت للحركة القوية مباشرة
+    - نبحث أقرب شمعة عكسية للـ IDM والشمعة بعدها في نفس اتجاه الحركة
+    - جسم واضح فوق 50%
+    - لو ما لقينا، نوسع البحث بدون شرط الشمعة التالية
     """
     if idm_idx is None or idm_idx < 2:
         return None
-    search_start = max(idm_idx - 10, 0)
-    # من IDM للخلف
-    for i in range(idm_idx, search_start, -1):
+
+    # بحث ضيق أولاً: 5 شمعات قبل IDM مع شرط الشمعة التالية
+    for i in range(idm_idx - 1, max(idm_idx - 6, 0), -1):
         c = df.iloc[i]
         body = abs(c["close"] - c["open"])
         candle_range = c["high"] - c["low"]
-        # شمعة ذات جسم واضح (مو دوجي)
         if candle_range == 0:
             continue
-        body_ratio = body / candle_range
-        if body_ratio < 0.4:
+        if body / candle_range < 0.5:
+            continue
+        next_c = df.iloc[i + 1] if i + 1 < len(df) else None
+        if direction == "bullish" and c["close"] < c["open"]:
+            if next_c is not None and next_c["close"] > next_c["open"]:
+                return {"top": c["open"], "bottom": c["close"], "index": i}
+        elif direction == "bearish" and c["close"] > c["open"]:
+            if next_c is not None and next_c["close"] < next_c["open"]:
+                return {"top": c["close"], "bottom": c["open"], "index": i}
+
+    # بحث موسع: 10 شمعات بدون شرط الشمعة التالية
+    for i in range(idm_idx - 1, max(idm_idx - 11, 0), -1):
+        c = df.iloc[i]
+        body = abs(c["close"] - c["open"])
+        candle_range = c["high"] - c["low"]
+        if candle_range == 0:
+            continue
+        if body / candle_range < 0.4:
             continue
         if direction == "bullish" and c["close"] < c["open"]:
             return {"top": c["open"], "bottom": c["close"], "index": i}
         elif direction == "bearish" and c["close"] > c["open"]:
             return {"top": c["close"], "bottom": c["open"], "index": i}
     return None
+
+
+def ob_sweeps_liquidity(df, ob, direction, highs, lows):
+    """
+    هل الـ OB فوق/تحت مستوى سيولة مهم؟ = OB أقوى
+    """
+    if not ob:
+        return False
+    ob_idx = ob.get("index", 0)
+    prev_highs = [h[1] for h in highs if h[0] < ob_idx]
+    prev_lows = [l[1] for l in lows if l[0] < ob_idx]
+
+    if direction == "bullish" and prev_lows:
+        nearest_low = max(prev_lows)
+        return ob["bottom"] <= nearest_low <= ob["top"]
+    elif direction == "bearish" and prev_highs:
+        nearest_high = min(prev_highs)
+        return ob["bottom"] <= nearest_high <= ob["top"]
+    return False
 
 
 def check_liquidity_sweep(df, direction):
@@ -254,14 +288,15 @@ def is_price_in_ob(current, ob, buffer=0.2):
     return extended_bottom <= current <= extended_top
 
 
-def calc_quality(dbos, idm, ob, sweep, weekly_match, daily_match, in_ob, has_news):
+def calc_quality(dbos, idm, ob, sweep, weekly_match, daily_match, in_ob, ob_sweep, has_news):
     score = 0
-    if dbos: score += 20   # كسر هيكل مزدوج - أساسي
-    if idm: score += 20    # بول باك - أساسي
-    if ob: score += 20     # أوردر بلوك - أساسي
-    if sweep: score += 15  # سحب سيولة - مهم
+    if dbos: score += 20         # كسر هيكل مزدوج - أساسي
+    if idm: score += 20          # بول باك - أساسي
+    if ob: score += 20           # أوردر بلوك - أساسي
+    if ob_sweep: score += 15     # OB يسحب سيولة = أقوى ⚡
+    if sweep: score += 10        # سحب سيولة عام
     if daily_match: score += 10  # توافق يومي
-    if weekly_match: score += 10 # توافق أسبوعي
+    if weekly_match: score += 5  # توافق أسبوعي
     if in_ob: score += 5         # السعر في المنطقة الحين
     if has_news: score -= 20     # أخبار = خطر
     return max(0, min(100, score))
@@ -368,6 +403,7 @@ def analyze(sym_name, yf_sym, tf, news):
     current = df["close"].iloc[-1]
     in_ob = is_price_in_ob(current, ob)
     sweep = check_liquidity_sweep(df, trend)
+    ob_sweep = ob_sweeps_liquidity(df, ob, trend, highs, lows)
 
     # توافق الفريمات العليا
     df_d = get_candles(yf_sym, "1d", 50)
@@ -378,7 +414,7 @@ def analyze(sym_name, yf_sym, tf, news):
     weekly_trend = detect_trend(df_w) if not df_w.empty else "neutral"
     weekly_match = weekly_trend == trend
 
-    quality = calc_quality(dbos, idm, ob, sweep, weekly_match, daily_match, in_ob, news["has_news"])
+    quality = calc_quality(dbos, idm, ob, sweep, weekly_match, daily_match, in_ob, ob_sweep, news["has_news"])
     if quality < 60:
         return None
 
@@ -392,6 +428,7 @@ def analyze(sym_name, yf_sym, tf, news):
         "ob": ob,
         "in_ob": in_ob,
         "sweep": sweep,
+        "ob_sweep": ob_sweep,
         "daily_match": daily_match,
         "daily_trend": daily_trend,
         "weekly_match": weekly_match,
@@ -420,6 +457,8 @@ def setup_msg(a):
     quality_bar = "█" * (a["quality"] // 20) + "░" * (5 - a["quality"] // 20)
 
     extras = []
+    if a.get("ob_sweep"):
+        extras.append("⚡ OB يسحب سيولة = قوي جداً")
     if a["sweep"]:
         extras.append("✅ سحب سيولة")
     if a["daily_match"] and a["weekly_match"]:
