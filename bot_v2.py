@@ -1,7 +1,7 @@
 
 ICT/SMC - DBOS + IDM + OB
 نسخة شخصية - باللهجة السعودية
-“””
+
 
 import asyncio
 import os
