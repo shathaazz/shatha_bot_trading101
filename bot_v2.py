@@ -19,7 +19,7 @@ logger = logging.getLogger(**name**)
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_TOKEN_HERE")
 CHAT_ID = os.environ.get("CHAT_ID", "YOUR_CHAT_ID_HERE")
-RIYADH_TZ = pytz.timezone(‘Asia/Riyadh’)
+RIYADH_TZ = pytz.timezone('Asia/Riyadh')
 
 # ==================== إعدادات الحساب ====================
 
