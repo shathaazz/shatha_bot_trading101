@@ -333,25 +333,25 @@ def calc_quality(dbos, idm, ob, sweep, weekly_match, daily_match, in_ob, ob_swee
 
 def calc_entry_sl_tp(ob, direction):
     """
-    الدخول: أعلى الـ OB (bullish) أو أسفله (bearish) = ليمت أوردر
-    الستوب: تحت الـ OB مباشرة (bullish) أو فوقه (bearish)
+    الدخول: أعلى الـ OB تماماً (bullish) أو أسفله تماماً (bearish)
+    الستوب: تحت أسفل الـ OB بهامش 10% (bullish) أو فوق أعلاه (bearish)
     الأهداف: RR 1:2 و 1:4
     """
     ob_range = ob["top"] - ob["bottom"]
-    sl_buffer = ob_range * 0.1  # هامش صغير تحت/فوق الـ OB
+    sl_buffer = ob_range * 0.1  # 10% تحت/فوق الـ OB
 
     if direction == "bullish":
-        entry = round(ob["top"], 5)           # ليمت عند أعلى الـ OB
-        sl = round(ob["bottom"] - sl_buffer, 5)  # ستوب تحت الـ OB
+        entry = round(ob["top"], 5)               # دخول عند أعلى الـ OB
+        sl = round(ob["bottom"] - sl_buffer, 5)   # ستوب تحت أسفل الـ OB
         risk = entry - sl
-        tp1 = round(entry + risk * 2.0, 5)   # هدف 1: RR 1:2
-        tp2 = round(entry + risk * 4.0, 5)   # هدف 2: RR 1:4
+        tp1 = round(entry + risk * 2.0, 5)
+        tp2 = round(entry + risk * 4.0, 5)
     else:
-        entry = round(ob["bottom"], 5)        # ليمت عند أسفل الـ OB
-        sl = round(ob["top"] + sl_buffer, 5)     # ستوب فوق الـ OB
+        entry = round(ob["bottom"], 5)             # دخول عند أسفل الـ OB
+        sl = round(ob["top"] + sl_buffer, 5)       # ستوب فوق أعلى الـ OB
         risk = sl - entry
-        tp1 = round(entry - risk * 2.0, 5)   # هدف 1: RR 1:2
-        tp2 = round(entry - risk * 4.0, 5)   # هدف 2: RR 1:4
+        tp1 = round(entry - risk * 2.0, 5)
+        tp2 = round(entry - risk * 4.0, 5)
 
     return entry, sl, tp1, tp2, 2.0, 4.0
 
@@ -445,6 +445,16 @@ def analyze(sym_name, yf_sym, tf, news):
 
     quality = calc_quality(dbos, idm, ob, sweep, weekly_match, daily_match, in_ob, ob_sweep, news["has_news"])
     if quality < 70:
+        return None
+
+    # تأكد إن السيتاب حديث على نفس الفريم - الـ OB لازم يكون في آخر 40 شمعة
+    ob_age = len(df) - ob.get("index", 0)
+    if ob_age > 40:
+        return None
+
+    # الـ IDM لازم يكون بعد الـ OB وفي آخر 30 شمعة
+    idm_age = len(df) - idm["index"]
+    if idm_age > 30:
         return None
 
     entry, sl, tp1, tp2, rr1, rr2 = calc_entry_sl_tp(ob, trend)
