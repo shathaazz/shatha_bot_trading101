@@ -471,7 +471,7 @@ def analyze(sym_name, yf_sym, tf, news):
     # أو تحت الـ OB وقادم له (bearish)
     # مو بعيد عنه بأكثر من 3x حجم الـ OB
     ob_range = ob["top"] - ob["bottom"]
-    max_distance = ob_range * 8  # أقصى مسافة مقبولة
+    max_distance = ob_range * 15  # أقصى مسافة مقبولة
 
     if direction == "bullish":
         # السعر لازم فوق الـ OB أو داخله
@@ -500,17 +500,17 @@ def analyze(sym_name, yf_sym, tf, news):
     weekly_match = weekly_trend == trend
 
     quality = calc_quality(dbos, idm, ob, sweep, weekly_match, daily_match, in_ob, ob_sweep, news["has_news"])
-    if quality < 70:
+    if quality < 65:
         return None
 
     # تأكد إن السيتاب حديث على نفس الفريم - الـ OB لازم يكون في آخر 40 شمعة
     ob_age = len(df) - ob.get("index", 0)
-    if ob_age > 40:
+    if ob_age > 60:
         return None
 
     # الـ IDM لازم يكون بعد الـ OB وفي آخر 30 شمعة
     idm_age = len(df) - idm["index"]
-    if idm_age > 30:
+    if idm_age > 40:
         return None
 
     entry, sl, tp1, tp2, rr1, rr2 = calc_entry_sl_tp(ob, trend)
