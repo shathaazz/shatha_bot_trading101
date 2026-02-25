@@ -21,6 +21,12 @@ CHAT_ID = os.environ.get("CHAT_ID", "YOUR_CHAT_ID_HERE")
 RIYADH_TZ = pytz.timezone("Asia/Riyadh")
 
 # ===== حساب البروب فيرم =====
+PHASE_TARGETS = {
+    "challenge":     {"target": 8.0,  "max_dd": 10.0, "daily_dd": 5.0},
+    "verification":  {"target": 4.0,  "max_dd": 10.0, "daily_dd": 5.0},
+    "funded":        {"target": None, "max_dd": 10.0, "daily_dd": 5.0},
+}
+
 ACCOUNT = {
     "balance": float(os.environ.get("ACCOUNT_BALANCE", "10000")),
     "current_balance": float(os.environ.get("ACCOUNT_BALANCE", "10000")),
@@ -32,7 +38,8 @@ ACCOUNT = {
     "trades_today": 0,
     "pnl_percent": 0.0,
     "firm_name": os.environ.get("FIRM_NAME", "Prop Firm"),
-    "phase": os.environ.get("ACCOUNT_PHASE", "challenge"),
+    "phase": os.environ.get("ACCOUNT_PHASE", "challenge"),  # challenge / verification / funded
+    "profit_split": float(os.environ.get("PROFIT_SPLIT", "20")),  # % شركة تاخذه
 }
 
 SYMBOLS = {
@@ -929,6 +936,22 @@ def weekly_report_msg():
 
 # ===== الفحص =====
 async def scan_markets(bot):
+    # حماية DD - لو اقتربنا من الحد نوقف
+    if not is_dd_safe():
+        remaining_max = ACCOUNT["max_drawdown"] - ACCOUNT["drawdown_used"]
+        remaining_daily = ACCOUNT["daily_drawdown"] - ACCOUNT["daily_used"]
+        if remaining_max <= 1.5:
+            await bot.send_message(
+                chat_id=CHAT_ID,
+                text=f"🛑 Max DD critical! Only {remaining_max:.1f}% left\nNo trades until you review your account\n/update to refresh"
+            )
+        elif remaining_daily <= 0.5:
+            await bot.send_message(
+                chat_id=CHAT_ID,
+                text=f"⛔ Daily DD limit reached! {remaining_daily:.1f}% left today\nRest for today, back tomorrow 💪"
+            )
+        return False
+
     news = check_news()
     found = []
     for name, yf_sym in SYMBOLS.items():
@@ -975,6 +998,7 @@ async def trading_loop(bot):
 
             if now.hour == 8 and now.minute < 5 and last_advice_day != today:
                 await bot.send_message(chat_id=CHAT_ID, text=daily_advice_msg())
+                await bot.send_message(chat_id=CHAT_ID, text=challenge_progress_msg())
                 ACCOUNT["daily_used"] = 0.0
                 ACCOUNT["trades_today"] = 0
                 last_advice_day = today
@@ -1011,6 +1035,7 @@ async def start_cmd(update, context):
         "/scan فحص فوري\n"
         "/advice نصايح اليوم\n"
         "/status حالة الحساب\n"
+        "/progress Challenge progress\n"
         "/update تحديث الحساب\n"
         "/journal تقرير الجورنال\n"
     )
@@ -1029,6 +1054,10 @@ async def advice_cmd(update, context):
 
 async def status_cmd(update, context):
     await update.message.reply_text(status_msg())
+
+
+async def progress_cmd(update, context):
+    await update.message.reply_text(challenge_progress_msg())
 
 
 async def journal_cmd(update, context):
@@ -1056,6 +1085,7 @@ async def main():
     app.add_handler(CommandHandler("scan", scan_cmd))
     app.add_handler(CommandHandler("advice", advice_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(CommandHandler("progress", progress_cmd))
     app.add_handler(CommandHandler("journal", journal_cmd))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(update_conv)
