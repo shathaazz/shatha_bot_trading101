@@ -179,21 +179,44 @@ def detect_dbos(df, highs, lows, direction):
 
 def find_idm(df, dbos_idx, direction):
     """
-    IDM: أول بول باك بعد الكسر
-    - Bullish: أول شمعة هابطة تعمل قاع جديد بعد الكسر
-    - Bearish: أول شمعة صاعدة تعمل قمة جديدة بعد الكسر
-    نبحث في نطاق محدود (20 شمعة) عشان ما نبعد عن الكسر
+    IDM: أول بول باك بعد الضلع القوي
+    لازم يكون شمعة سيولة واضحة = ذيل طويل أو شمعة سيولة كاملة
+    - Bullish: ذيل سفلي طويل (> 40% من الشمعة) أو شمعة هابطة بجسم كبير
+    - Bearish: ذيل علوي طويل (> 40% من الشمعة) أو شمعة صاعدة بجسم كبير
+    مو مجرد شمعة صغيرة عشوائية
     """
     search_end = min(dbos_idx + 20, len(df))
     for i in range(dbos_idx + 1, search_end):
+        c = df.iloc[i]
+        candle_range = c["high"] - c["low"]
+        if candle_range == 0:
+            continue
+
         if direction == "bullish":
-            if (df["close"].iloc[i] < df["open"].iloc[i] and
-                    df["low"].iloc[i] < df["low"].iloc[i - 1]):
-                return {"index": i, "price": df["low"].iloc[i]}
+            lower_wick = min(c["open"], c["close"]) - c["low"]
+            wick_ratio = lower_wick / candle_range
+            body = abs(c["close"] - c["open"])
+            body_ratio = body / candle_range
+
+            # شمعة سيولة = ذيل سفلي طويل (> 40%) أو شمعة هابطة بجسم واضح (> 50%)
+            is_liquidity_candle = wick_ratio > 0.4
+            is_strong_bearish = c["close"] < c["open"] and body_ratio > 0.5
+
+            if (is_liquidity_candle or is_strong_bearish) and c["low"] < df["low"].iloc[i - 1]:
+                return {"index": i, "price": c["low"], "wick_ratio": round(wick_ratio, 2)}
+
         else:
-            if (df["close"].iloc[i] > df["open"].iloc[i] and
-                    df["high"].iloc[i] > df["high"].iloc[i - 1]):
-                return {"index": i, "price": df["high"].iloc[i]}
+            upper_wick = c["high"] - max(c["open"], c["close"])
+            wick_ratio = upper_wick / candle_range
+            body = abs(c["close"] - c["open"])
+            body_ratio = body / candle_range
+
+            is_liquidity_candle = wick_ratio > 0.4
+            is_strong_bullish = c["close"] > c["open"] and body_ratio > 0.5
+
+            if (is_liquidity_candle or is_strong_bullish) and c["high"] > df["high"].iloc[i - 1]:
+                return {"index": i, "price": c["high"], "wick_ratio": round(wick_ratio, 2)}
+
     return None
 
 
@@ -302,6 +325,8 @@ def calc_quality(dbos, idm, ob, sweep, weekly_match, daily_match, in_ob, ob_swee
     if daily_match: score += 10  # توافق يومي
     if weekly_match: score += 5  # توافق أسبوعي
     if in_ob: score += 5         # السعر في المنطقة الحين
+    # بونص IDM ذيل سيولة واضح
+    if idm and idm.get("wick_ratio", 0) > 0.4: score += 5
     if has_news: score -= 20     # أخبار = خطر
     return max(0, min(100, score))
 
@@ -419,7 +444,7 @@ def analyze(sym_name, yf_sym, tf, news):
     weekly_match = weekly_trend == trend
 
     quality = calc_quality(dbos, idm, ob, sweep, weekly_match, daily_match, in_ob, ob_sweep, news["has_news"])
-    if quality < 60:
+    if quality < 70:
         return None
 
     entry, sl, tp1, tp2, rr1, rr2 = calc_entry_sl_tp(ob, trend)
