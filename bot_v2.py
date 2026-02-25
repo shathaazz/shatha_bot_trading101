@@ -163,24 +163,53 @@ def find_swings(df, lb=5):
 
 def detect_dbos(df, highs, lows, direction):
     """
-    DBOS: كسر هيكل مزدوج
-    - Bullish: قمتين صاعدتين + السعر يكسر القمة الأولى
-    - Bearish: قاعين هابطين + السعر يكسر القاع الأول
+    DBOS: ضلع واحد قوي يكسر مستويين مهمين
+    الضلع الواحد = حركة قوية بدون تراجع > 30%
+    يكسر قمتين (bullish) أو قاعين (bearish) متتاليتين
     """
     if direction == "bullish" and len(highs) >= 2:
-        # نبحث من الأحدث للأقدم
         for i in range(len(highs) - 1, 0, -1):
-            if highs[i][1] > highs[i - 1][1]:
-                # كسر القمة الأولى
-                for j in range(highs[i - 1][0], len(df)):
-                    if df["close"].iloc[j] > highs[i - 1][1]:
-                        return {"index": j, "price": highs[i - 1][1]}
+            h2 = highs[i]    # القمة الأحدث
+            h1 = highs[i-1]  # القمة الأقدم
+            if h2[1] <= h1[1]:
+                continue
+            # الضلع الواحد: من h1 لـ h2 بدون تراجع كبير
+            seg = df.iloc[h1[0]:h2[0]+1]
+            if len(seg) < 2 or len(seg) > 12:
+                continue
+            move = h2[1] - df["low"].iloc[h1[0]:h2[0]+1].min()
+            max_pullback = 0
+            for k in range(1, len(seg)):
+                pb = seg["high"].iloc[k-1] - seg["low"].iloc[k]
+                if pb > max_pullback:
+                    max_pullback = pb
+            # تراجع لا يتجاوز 35% = ضلع واحد
+            if move > 0 and max_pullback / move > 0.35:
+                continue
+            # تأكد الكسر واضح
+            for j in range(h2[0], min(h2[0]+5, len(df))):
+                if df["close"].iloc[j] > h1[1]:
+                    return {"index": j, "price": h1[1], "sweep_level": df["low"].iloc[h1[0]:h2[0]+1].min()}
     elif direction == "bearish" and len(lows) >= 2:
         for i in range(len(lows) - 1, 0, -1):
-            if lows[i][1] < lows[i - 1][1]:
-                for j in range(lows[i - 1][0], len(df)):
-                    if df["close"].iloc[j] < lows[i - 1][1]:
-                        return {"index": j, "price": lows[i - 1][1]}
+            l2 = lows[i]
+            l1 = lows[i-1]
+            if l2[1] >= l1[1]:
+                continue
+            seg = df.iloc[l1[0]:l2[0]+1]
+            if len(seg) < 2 or len(seg) > 12:
+                continue
+            move = df["high"].iloc[l1[0]:l2[0]+1].max() - l2[1]
+            max_pullback = 0
+            for k in range(1, len(seg)):
+                pb = seg["high"].iloc[k] - seg["low"].iloc[k-1]
+                if pb > max_pullback:
+                    max_pullback = pb
+            if move > 0 and max_pullback / move > 0.35:
+                continue
+            for j in range(l2[0], min(l2[0]+5, len(df))):
+                if df["close"].iloc[j] < l1[1]:
+                    return {"index": j, "price": l1[1], "sweep_level": df["high"].iloc[l1[0]:l2[0]+1].max()}
     return None
 
 
@@ -437,6 +466,26 @@ def analyze(sym_name, yf_sym, tf, news):
         return None
 
     current = df["close"].iloc[-1]
+
+    # الشرط الأساسي: السعر لازم يكون فوق الـ OB وقادم له (bullish)
+    # أو تحت الـ OB وقادم له (bearish)
+    # مو بعيد عنه بأكثر من 3x حجم الـ OB
+    ob_range = ob["top"] - ob["bottom"]
+    max_distance = ob_range * 8  # أقصى مسافة مقبولة
+
+    if direction == "bullish":
+        # السعر لازم فوق الـ OB أو داخله
+        if current < ob["bottom"] - ob_range:
+            return None  # السعر تحت الـ OB = فات الفرصة
+        if current > ob["top"] + max_distance:
+            return None  # السعر بعيد جداً = OB قديم
+    else:
+        # السعر لازم تحت الـ OB أو داخله
+        if current > ob["top"] + ob_range:
+            return None  # السعر فوق الـ OB = فات الفرصة
+        if current < ob["bottom"] - max_distance:
+            return None  # السعر بعيد جداً
+
     in_ob = is_price_in_ob(current, ob)
     sweep = check_liquidity_sweep(df, trend)
     ob_sweep = ob_sweeps_liquidity(df, ob, trend, highs, lows)
