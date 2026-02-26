@@ -1573,12 +1573,27 @@ async def debug_cmd(update, context):
                 if isinstance(result, str):
                     msg += f"{result}\n"
                 elif isinstance(result, dict):
-                    msg += f"{name} {tf}: ✅ سيتاب جودة {result['quality']}%\n"
+                    msg += f"{name} {tf}: ✅ DBOS جودة {result['quality']}%\n"
                 else:
                     msg += f"{name} {tf}: ❌ ما في سيتاب\n"
             except Exception as e:
                 logger.error(f"debug error {name} {tf}: {e}")
                 msg += f"{name} {tf}: ⚠️ {str(e)[:40]}\n"
+
+    msg += "\n🌟 Morning Star:\n─────────────────\n"
+    for name, yf_sym in SYMBOLS.items():
+        for tf in ["4h", "1h"]:
+            try:
+                result = analyze_morning_star(name, yf_sym, tf, news, debug=True)
+                if isinstance(result, str):
+                    msg += f"{result}\n"
+                elif isinstance(result, dict):
+                    msg += f"🌟 {name} {tf}: ✅ Morning Star جودة {result['quality']}%\n"
+                else:
+                    msg += f"🌟 {name} {tf}: ❌ ما في\n"
+            except Exception as e:
+                msg += f"🌟 {name} {tf}: ⚠️ {str(e)[:40]}\n"
+
     await update.message.reply_text(msg)
 
 
