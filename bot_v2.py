@@ -95,6 +95,110 @@ DAILY_TIPS = [
 # ===== حالات المحادثة للتحديث =====
 (S_BALANCE, S_PNL, S_DD, S_DAILY, S_TRADES_W, S_TRADES_D) = range(6)
 
+# ===== نظام الأوزان المتعلمة =====
+import json
+
+WEIGHTS_FILE = "weights.json"
+
+DEFAULT_WEIGHTS = {
+    "idm_wick_high": 1.0,
+    "idm_wick_medium": 1.0,
+    "h4_of_high": 1.0,
+    "h4_of_medium": 1.0,
+    "h1_of_high": 1.0,
+    "has_liquidity": 1.0,
+    "daily_match": 1.0,
+    "weekly_match": 1.0,
+    "ob_body_high": 1.0,
+}
+
+# الأوزان في الذاكرة - لا تضيع لو السيرفر restart مؤقتاً
+WEIGHTS_MEMORY = DEFAULT_WEIGHTS.copy()
+
+def load_weights():
+    global WEIGHTS_MEMORY
+    try:
+        with open(WEIGHTS_FILE, "r") as f:
+            w = json.load(f)
+            for k in DEFAULT_WEIGHTS:
+                if k not in w:
+                    w[k] = DEFAULT_WEIGHTS[k]
+            WEIGHTS_MEMORY = w.copy()
+            return w
+    except:
+        return WEIGHTS_MEMORY.copy()
+
+def save_weights(weights):
+    global WEIGHTS_MEMORY
+    WEIGHTS_MEMORY = weights.copy()
+    try:
+        with open(WEIGHTS_FILE, "w") as f:
+            json.dump(weights, f, indent=2)
+    except Exception as e:
+        logger.error(f"خطأ حفظ الأوزان: {e}")
+
+def update_weights_entered(analysis, reached_tp=False):
+    weights = load_weights()
+    boost = 0.35 if reached_tp else 0.15
+    if analysis.get("idm_wick", 0) > 0.5:
+        weights["idm_wick_high"] = min(3.0, weights["idm_wick_high"] + boost)
+    elif analysis.get("idm_wick", 0) > 0.35:
+        weights["idm_wick_medium"] = min(3.0, weights["idm_wick_medium"] + boost)
+    h4_of = analysis.get("h4_of", 0)
+    if h4_of >= 0.7:
+        weights["h4_of_high"] = min(3.0, weights["h4_of_high"] + boost)
+    elif h4_of >= 0.5:
+        weights["h4_of_medium"] = min(3.0, weights["h4_of_medium"] + boost)
+    if analysis.get("h1_of", 0) >= 0.7:
+        weights["h1_of_high"] = min(3.0, weights["h1_of_high"] + boost)
+    if analysis.get("has_liquidity"):
+        weights["has_liquidity"] = min(3.0, weights["has_liquidity"] + boost)
+    if analysis.get("daily_match"):
+        weights["daily_match"] = min(3.0, weights["daily_match"] + boost)
+    if analysis.get("weekly_match"):
+        weights["weekly_match"] = min(3.0, weights["weekly_match"] + boost)
+    if analysis.get("ob", {}).get("body_ratio", 0) > 0.6:
+        weights["ob_body_high"] = min(3.0, weights["ob_body_high"] + boost)
+    save_weights(weights)
+
+def update_weights_skipped(analysis):
+    weights = load_weights()
+    penalty = 0.10
+    if analysis.get("idm_wick", 0) > 0.5:
+        weights["idm_wick_high"] = max(0.1, weights["idm_wick_high"] - penalty)
+    elif analysis.get("idm_wick", 0) > 0.35:
+        weights["idm_wick_medium"] = max(0.1, weights["idm_wick_medium"] - penalty)
+    h4_of = analysis.get("h4_of", 0)
+    if h4_of >= 0.7:
+        weights["h4_of_high"] = max(0.1, weights["h4_of_high"] - penalty)
+    elif h4_of >= 0.5:
+        weights["h4_of_medium"] = max(0.1, weights["h4_of_medium"] - penalty)
+    if analysis.get("has_liquidity"):
+        weights["has_liquidity"] = max(0.1, weights["has_liquidity"] - penalty)
+    save_weights(weights)
+
+def calc_quality_weighted(dbos, idm, ob, h4_of, h1_of, has_liquidity,
+                           daily_match, weekly_match, in_ob, has_news,
+                           idm_wick=0, ob_body=0):
+    weights = WEIGHTS_MEMORY
+    score = 0
+    if dbos: score += 20
+    if idm: score += 15
+    if ob: score += 15
+    if idm_wick > 0.5: score += 8 * weights["idm_wick_high"]
+    elif idm_wick > 0.35: score += 5 * weights["idm_wick_medium"]
+    if h4_of >= 0.7: score += 8 * weights["h4_of_high"]
+    elif h4_of >= 0.5: score += 5 * weights["h4_of_medium"]
+    if h1_of >= 0.7: score += 6 * weights["h1_of_high"]
+    if has_liquidity: score += 8 * weights["has_liquidity"]
+    if daily_match: score += 6 * weights["daily_match"]
+    if weekly_match: score += 4 * weights["weekly_match"]
+    if ob_body > 0.6: score += 5 * weights["ob_body_high"]
+    if in_ob: score += 5
+    if has_news: score -= 20
+    return max(0, min(100, round(score)))
+
+
 # ===== جورنال الصفقات =====
 JOURNAL = {}  # { trade_id: {symbol, tf, entry, sl, tp1, tp2, direction, risk, status, result_r, timestamp} }
 TRADE_COUNTER = [0]  # قائمة عشان نقدر نعدلها داخل الدوال
@@ -556,7 +660,12 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
     weekly_trend = detect_trend_structure(df_w) if not df_w.empty else "neutral"
     weekly_match = weekly_trend == trend
 
-    quality = calc_quality(dbos, idm, ob, sweep, weekly_match, daily_match, in_ob, ob_sweep, news["has_news"], h4_of, h1_of, has_liquidity)
+    quality = calc_quality_weighted(
+        dbos, idm, ob, h4_of, h1_of, has_liquidity,
+        daily_match, weekly_match, in_ob, news["has_news"],
+        idm_wick=idm.get("wick_ratio", 0) if idm else 0,
+        ob_body=ob.get("body_ratio", 0) if ob else 0
+    )
     if quality < 65:
         if debug: return f"{sym_name} {tf}: ❌ جودة منخفضة {quality}%"
         return None
@@ -958,11 +1067,13 @@ async def handle_callback(update, context):
                 t["result_r"] = 2.0
                 t["status"] = "closed"
                 DAILY_RISK["consecutive_losses"] = 0
+                update_weights_entered(t.get("analysis", {}), reached_tp=True)
                 msg = f"✅ هدف 1 وصل! +2R على {t['symbol']} 🎯"
             elif result == "tp2":
                 t["result_r"] = 4.0
                 t["status"] = "closed"
                 DAILY_RISK["consecutive_losses"] = 0
+                update_weights_entered(t.get("analysis", {}), reached_tp=True)
                 msg = f"🚀 هدف 2 وصل! +4R على {t['symbol']} 🔥"
             else:
                 t["result_r"] = -1.0
