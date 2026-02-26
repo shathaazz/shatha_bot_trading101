@@ -175,7 +175,7 @@ def detect_dbos(df, highs, lows, direction):
                 continue
             # الضلع الواحد: من h1 لـ h2 بدون تراجع كبير
             seg = df.iloc[h1[0]:h2[0]+1]
-            if len(seg) < 2 or len(seg) > 12:
+            if len(seg) < 2 or len(seg) > 20:
                 continue
             move = h2[1] - df["low"].iloc[h1[0]:h2[0]+1].min()
             max_pullback = 0
@@ -184,7 +184,7 @@ def detect_dbos(df, highs, lows, direction):
                 if pb > max_pullback:
                     max_pullback = pb
             # تراجع لا يتجاوز 35% = ضلع واحد
-            if move > 0 and max_pullback / move > 0.35:
+            if move > 0 and max_pullback / move > 0.50:
                 continue
             # تأكد الكسر واضح
             for j in range(h2[0], min(h2[0]+5, len(df))):
@@ -197,7 +197,7 @@ def detect_dbos(df, highs, lows, direction):
             if l2[1] >= l1[1]:
                 continue
             seg = df.iloc[l1[0]:l2[0]+1]
-            if len(seg) < 2 or len(seg) > 12:
+            if len(seg) < 2 or len(seg) > 20:
                 continue
             move = df["high"].iloc[l1[0]:l2[0]+1].max() - l2[1]
             max_pullback = 0
@@ -205,7 +205,7 @@ def detect_dbos(df, highs, lows, direction):
                 pb = seg["high"].iloc[k] - seg["low"].iloc[k-1]
                 if pb > max_pullback:
                     max_pullback = pb
-            if move > 0 and max_pullback / move > 0.35:
+            if move > 0 and max_pullback / move > 0.50:
                 continue
             for j in range(l2[0], min(l2[0]+5, len(df))):
                 if df["close"].iloc[j] < l1[1]:
@@ -467,6 +467,7 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
         return None
 
     current = df["close"].iloc[-1]
+    direction = trend  # alias عشان ما في لبس
 
     # الشرط الأساسي: السعر لازم يكون فوق الـ OB وقادم له (bullish)
     # أو تحت الـ OB وقادم له (bearish)
@@ -1110,8 +1111,11 @@ async def debug_cmd(update, context):
                     msg += f"{result}\n"
                 elif result:
                     msg += f"{name} {tf}: ✅ سيتاب جودة {result['quality']}%\n"
+                else:
+                    msg += f"{name} {tf}: ❌ ما في سيتاب\n"
             except Exception as e:
-                msg += f"{name} {tf}: ⚠️ خطأ: {str(e)[:30]}\n"
+                logger.error(f"debug error {name} {tf}: {e}")
+                msg += f"{name} {tf}: ⚠️ {str(e)[:40]}\n"
     await update.message.reply_text(msg)
 
 
