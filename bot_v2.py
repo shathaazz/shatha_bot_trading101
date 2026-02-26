@@ -202,6 +202,8 @@ def calc_quality_weighted(dbos, idm, ob, h4_of, h1_of, has_liquidity,
 # ===== جورنال الصفقات =====
 JOURNAL = {}  # { trade_id: {symbol, tf, entry, sl, tp1, tp2, direction, risk, status, result_r, timestamp} }
 TRADE_COUNTER = [0]  # قائمة عشان نقدر نعدلها داخل الدوال
+SENT_SETUPS = {}  # يمنع تكرار نفس الصفقة - {symbol_tf: timestamp}
+PENDING_SETUPS = {}  # سيتابات جاهزة بس السعر ما وصل OB بعد
 
 # ===== Daily Risk Breaker =====
 DAILY_RISK = {
@@ -602,12 +604,19 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
         if debug: return f"{sym_name} {tf}: ❌ ترند محايد"
         return None
 
-    # 2. Order Flow H4
+    # 2. Order Flow H4 - لازم يدعم الاتجاه
     df_h4 = get_candles(yf_sym, "4h", 30)
     h4_trend = detect_trend_structure(df_h4) if not df_h4.empty else "neutral"
     h4_of = detect_order_flow(df_h4, trend) if not df_h4.empty else 0.0
+
+    # H4 عكس الاتجاه = رفض
     if h4_trend != "neutral" and h4_trend != trend:
         if debug: return f"{sym_name} {tf}: ❌ H4 عكس الاتجاه"
+        return None
+
+    # H4 order flow لازم 0.6 على الأقل
+    if h4_of < 0.6:
+        if debug: return f"{sym_name} {tf}: ❌ H4 order flow ضعيف ({h4_of})"
         return None
 
     # Order Flow H1
@@ -636,14 +645,20 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
     direction = trend
     ob_range = ob["top"] - ob["bottom"]
 
-    # السعر ما فات الـ OB
+    # السعر لازم قريب من الـ OB (بحد أقصى 2x حجم OB)
     if direction == "bullish":
-        if current < ob["bottom"] - ob_range * 0.5:
-            if debug: return f"{sym_name} {tf}: ❌ فات الـ OB"
+        if current < ob["bottom"] - ob_range:
+            if debug: return f"{sym_name} {tf}: ❌ فات الـ OB (السعر تحته)"
+            return None
+        if current > ob["top"] + ob_range * 2:
+            if debug: return f"{sym_name} {tf}: ⏳ السعر بعيد عن OB - انتظار"
             return None
     else:
-        if current > ob["top"] + ob_range * 0.5:
-            if debug: return f"{sym_name} {tf}: ❌ فات الـ OB"
+        if current > ob["top"] + ob_range:
+            if debug: return f"{sym_name} {tf}: ❌ فات الـ OB (السعر فوقه)"
+            return None
+        if current < ob["bottom"] - ob_range * 2:
+            if debug: return f"{sym_name} {tf}: ⏳ السعر بعيد عن OB - انتظار"
             return None
 
     in_ob = ob["bottom"] <= current <= ob["top"]
@@ -1212,23 +1227,29 @@ async def scan_markets(bot):
 
     news = check_news()
     found = []
+    now_ts = datetime.now()
+
     for name, yf_sym in SYMBOLS.items():
         for tf in ["4h", "1h"]:
+            # فلتر التكرار - ما يرسل نفس الزوج أكثر من مرة كل 4 ساعات
+            key = f"{name}_{tf}"
+            last_sent = SENT_SETUPS.get(key)
+            if last_sent:
+                hours_ago = (now_ts - last_sent).total_seconds() / 3600
+                if hours_ago < 4:
+                    continue
+
             try:
                 r = analyze(name, yf_sym, tf, news)
                 if r:
                     found.append(r)
-                else:
-                    # تشخيص مؤقت
-                    dbg = analyze(name, yf_sym, tf, news, debug=True)
-                    if isinstance(dbg, str) and "سيتاب" not in dbg:
-                        logger.info(f"SCAN REJECT: {dbg}")
             except Exception as e:
                 logger.error(f"خطأ {name} {tf}: {e}")
     if found:
         found.sort(key=lambda x: x["quality"], reverse=True)
         for s in found:
             await send_setup_with_buttons(bot, s)
+            SENT_SETUPS[f"{s['symbol']}_{s['tf']}"] = datetime.now()
             await asyncio.sleep(2)
         return True
     return False
