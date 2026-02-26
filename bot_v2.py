@@ -1461,8 +1461,11 @@ async def scan_markets(bot):
                 if ms and isinstance(ms, dict):
                     ms["_sent_key"] = key
                     found.append(ms)
+                    logger.info(f"Morning Star found: {name} {tf} quality={ms.get('quality')}")
+                else:
+                    logger.info(f"Morning Star none: {name} {tf}")
             except Exception as e:
-                logger.error(f"Morning Star خطأ {name} {tf}: {e}")
+                logger.error(f"Morning Star خطأ {name} {tf}: {e}", exc_info=True)
 
     if found:
         found.sort(key=lambda x: x["quality"], reverse=True)
