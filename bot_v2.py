@@ -99,6 +99,14 @@ DAILY_TIPS = [
 JOURNAL = {}  # { trade_id: {symbol, tf, entry, sl, tp1, tp2, direction, risk, status, result_r, timestamp} }
 TRADE_COUNTER = [0]  # قائمة عشان نقدر نعدلها داخل الدوال
 
+# ===== Daily Risk Breaker =====
+DAILY_RISK = {
+    "trading_stopped": False,
+    "consecutive_losses": 0,
+    "daily_loss_pct": 0.0,
+    "stop_reason": "",
+}
+
 
 # ===== الأخبار =====
 def check_news():
@@ -605,6 +613,31 @@ def setup_msg(a):
     msg += f"{risk_txt}\n"
     msg += f"📈 {tv}\n"
     msg += "القرار إلك يا شذا 💪"
+    return msg
+
+
+def challenge_progress_msg():
+    phase = ACCOUNT["phase"]
+    pnl = ACCOUNT["pnl_percent"]
+    target = PHASE_TARGETS.get(phase, {}).get("target", 0)
+    remaining_max = ACCOUNT["max_drawdown"] - ACCOUNT["drawdown_used"]
+    if target:
+        progress = max(0, min(100, round(pnl / target * 100)))
+        bar = "█" * (progress // 20) + "░" * (5 - progress // 20)
+        target_txt = f"الهدف: {target}% | وصلت: {pnl}%\n{bar} {progress}%"
+    else:
+        target_txt = f"حساب ممول | ربح: {pnl}%"
+    phase_label = {"challenge": "Challenge", "verification": "Verification", "funded": "Funded"}.get(phase, "")
+    msg = f"📊 {phase_label} Progress\n"
+    msg += "─────────────────\n"
+    msg += f"{target_txt}\n"
+    msg += f"دروداون باقي: {remaining_max:.1f}%\n"
+    if target and pnl >= target:
+        msg += "✅ حققتِ الهدف! انتقلي للمرحلة التالية"
+    elif remaining_max < 3:
+        msg += "⚠️ دروداون ضيق، تعاملي بحذر"
+    else:
+        msg += "واصلي يا شذا 💪"
     return msg
 
 
