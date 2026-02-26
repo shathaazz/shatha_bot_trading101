@@ -147,15 +147,39 @@ def get_candles(yf_sym, tf, limit=100):
         return pd.DataFrame()
 
 
-def detect_trend(df):
-    if len(df) < 20:
+def detect_trend_structure(df, lookback=30):
+    """الترند بناء على هيكل القمم والقيعان"""
+    if len(df) < lookback:
         return "neutral"
-    r = df.tail(20)
-    if r["high"].iloc[-1] > r["high"].iloc[0] and r["low"].iloc[-1] > r["low"].iloc[0]:
+    recent = df.tail(lookback)
+    highs = []
+    lows = []
+    for i in range(2, len(recent) - 2):
+        if (recent["high"].iloc[i] > recent["high"].iloc[i-1] and
+            recent["high"].iloc[i] > recent["high"].iloc[i-2] and
+            recent["high"].iloc[i] > recent["high"].iloc[i+1] and
+            recent["high"].iloc[i] > recent["high"].iloc[i+2]):
+            highs.append(recent["high"].iloc[i])
+        if (recent["low"].iloc[i] < recent["low"].iloc[i-1] and
+            recent["low"].iloc[i] < recent["low"].iloc[i-2] and
+            recent["low"].iloc[i] < recent["low"].iloc[i+1] and
+            recent["low"].iloc[i] < recent["low"].iloc[i+2]):
+            lows.append(recent["low"].iloc[i])
+    if len(highs) < 2 or len(lows) < 2:
+        return "neutral"
+    hh = highs[-1] > highs[-2]
+    hl = lows[-1] > lows[-2]
+    lh = highs[-1] < highs[-2]
+    ll = lows[-1] < lows[-2]
+    if hh and hl:
         return "bullish"
-    if r["high"].iloc[-1] < r["high"].iloc[0] and r["low"].iloc[-1] < r["low"].iloc[0]:
+    elif lh and ll:
         return "bearish"
     return "neutral"
+
+
+def detect_trend(df):
+    return detect_trend_structure(df)
 
 
 def find_swings(df, lb=5):
@@ -169,144 +193,123 @@ def find_swings(df, lb=5):
     return highs, lows
 
 
-def detect_dbos(df, highs, lows, direction):
-    """
-    DBOS: ضلع واحد قوي يكسر مستويين مهمين
-    الضلع الواحد = حركة قوية بدون تراجع > 30%
-    يكسر قمتين (bullish) أو قاعين (bearish) متتاليتين
-    """
-    if direction == "bullish" and len(highs) >= 2:
-        for i in range(len(highs) - 1, 0, -1):
-            h2 = highs[i]    # القمة الأحدث
-            h1 = highs[i-1]  # القمة الأقدم
-            if h2[1] <= h1[1]:
-                continue
-            # الضلع الواحد: من h1 لـ h2 بدون تراجع كبير
-            seg = df.iloc[h1[0]:h2[0]+1]
-            if len(seg) < 2 or len(seg) > 50:
-                continue
-            move = h2[1] - df["low"].iloc[h1[0]:h2[0]+1].min()
-            max_pullback = 0
-            for k in range(1, len(seg)):
-                pb = seg["high"].iloc[k-1] - seg["low"].iloc[k]
-                if pb > max_pullback:
-                    max_pullback = pb
-            # تراجع لا يتجاوز 35% = ضلع واحد
-            if move > 0 and max_pullback / move > 0.50:
-                continue
-            # تأكد الكسر واضح
-            for j in range(h2[0], min(h2[0]+10, len(df))):
-                if df["close"].iloc[j] > h1[1]:
-                    return {"index": j, "price": h1[1], "sweep_level": df["low"].iloc[h1[0]:h2[0]+1].min()}
-    elif direction == "bearish" and len(lows) >= 2:
-        for i in range(len(lows) - 1, 0, -1):
-            l2 = lows[i]
-            l1 = lows[i-1]
-            if l2[1] >= l1[1]:
-                continue
-            seg = df.iloc[l1[0]:l2[0]+1]
-            if len(seg) < 2 or len(seg) > 50:
-                continue
-            move = df["high"].iloc[l1[0]:l2[0]+1].max() - l2[1]
-            max_pullback = 0
-            for k in range(1, len(seg)):
-                pb = seg["high"].iloc[k] - seg["low"].iloc[k-1]
-                if pb > max_pullback:
-                    max_pullback = pb
-            if move > 0 and max_pullback / move > 0.50:
-                continue
-            for j in range(l2[0], min(l2[0]+10, len(df))):
-                if df["close"].iloc[j] < l1[1]:
-                    return {"index": j, "price": l1[1], "sweep_level": df["high"].iloc[l1[0]:l2[0]+1].max()}
+def detect_order_flow(df, direction, lookback=10):
+    """ICT Order Flow: HH+HL = bullish, LH+LL = bearish"""
+    if len(df) < lookback + 1:
+        return 0.0
+    recent = df.tail(lookback)
+    score = 0
+    total = lookback - 1
+    for i in range(1, len(recent)):
+        curr_high = recent["high"].iloc[i]
+        prev_high = recent["high"].iloc[i-1]
+        curr_low = recent["low"].iloc[i]
+        prev_low = recent["low"].iloc[i-1]
+        if direction == "bullish":
+            if curr_high > prev_high: score += 0.5
+            if curr_low > prev_low: score += 0.5
+        else:
+            if curr_high < prev_high: score += 0.5
+            if curr_low < prev_low: score += 0.5
+    return round(score / total, 2)
+
+
+def detect_dbos(df, direction=None, highs=None, lows=None):
+    """DBOS: ضلع واحد قوي يكسر قمتين/قاعين سابقتين"""
+    lb = 5
+    h_list, l_list = [], []
+    for i in range(lb, len(df) - lb):
+        if df["high"].iloc[i] == df["high"].iloc[i-lb:i+lb+1].max():
+            h_list.append((i, df["high"].iloc[i]))
+        if df["low"].iloc[i] == df["low"].iloc[i-lb:i+lb+1].min():
+            l_list.append((i, df["low"].iloc[i]))
+
+    if direction == "bullish" and len(h_list) >= 2:
+        for i in range(len(h_list)-1, 0, -1):
+            h2_idx, h2_val = h_list[i]
+            h1_idx, h1_val = h_list[i-1]
+            if h2_val <= h1_val: continue
+            segment = df.iloc[h1_idx:h2_idx+1]
+            if len(segment) < 2 or len(segment) > 60: continue
+            move_size = h2_val - segment["low"].min()
+            if move_size <= 0: continue
+            max_pb = max([segment["high"].iloc[k-1] - segment["low"].iloc[k] for k in range(1, len(segment))], default=0)
+            if max_pb / move_size > 0.40: continue
+            for j in range(h2_idx, min(h2_idx+8, len(df))):
+                if df["close"].iloc[j] > h1_val:
+                    return {"index": j, "price": h1_val, "impulse_start": h1_idx, "sweep_level": segment["low"].min()}
+
+    elif direction == "bearish" and len(l_list) >= 2:
+        for i in range(len(l_list)-1, 0, -1):
+            l2_idx, l2_val = l_list[i]
+            l1_idx, l1_val = l_list[i-1]
+            if l2_val >= l1_val: continue
+            segment = df.iloc[l1_idx:l2_idx+1]
+            if len(segment) < 2 or len(segment) > 60: continue
+            move_size = segment["high"].max() - l2_val
+            if move_size <= 0: continue
+            max_pb = max([segment["high"].iloc[k] - segment["low"].iloc[k-1] for k in range(1, len(segment))], default=0)
+            if max_pb / move_size > 0.40: continue
+            for j in range(l2_idx, min(l2_idx+8, len(df))):
+                if df["close"].iloc[j] < l1_val:
+                    return {"index": j, "price": l1_val, "impulse_start": l1_idx, "sweep_level": segment["high"].max()}
     return None
-
-
 def find_idm(df, dbos_idx, direction):
-    """
-    IDM: أول بول باك بعد الضلع القوي
-    لازم يكون شمعة سيولة واضحة = ذيل طويل أو شمعة سيولة كاملة
-    - Bullish: ذيل سفلي طويل (> 40% من الشمعة) أو شمعة هابطة بجسم كبير
-    - Bearish: ذيل علوي طويل (> 40% من الشمعة) أو شمعة صاعدة بجسم كبير
-    مو مجرد شمعة صغيرة عشوائية
-    """
-    search_end = min(dbos_idx + 20, len(df))
+    """IDM = أول قاع/قمة بعد DBOS = سحب السيولة بذيل واضح"""
+    search_end = min(dbos_idx + 25, len(df))
     for i in range(dbos_idx + 1, search_end):
         c = df.iloc[i]
         candle_range = c["high"] - c["low"]
         if candle_range == 0:
             continue
-
+        body = abs(c["close"] - c["open"])
+        body_ratio = body / candle_range
         if direction == "bullish":
             lower_wick = min(c["open"], c["close"]) - c["low"]
             wick_ratio = lower_wick / candle_range
-            body = abs(c["close"] - c["open"])
-            body_ratio = body / candle_range
-
-            # شمعة سيولة = ذيل سفلي طويل (> 40%) أو شمعة هابطة بجسم واضح (> 50%)
-            is_liquidity_candle = wick_ratio > 0.4
-            is_strong_bearish = c["close"] < c["open"] and body_ratio > 0.5
-
-            if (is_liquidity_candle or is_strong_bearish) and c["low"] < df["low"].iloc[i - 1]:
-                return {"index": i, "price": c["low"], "wick_ratio": round(wick_ratio, 2)}
-
+            is_pin_bar = wick_ratio > 0.35 and body_ratio < 0.5
+            is_bearish_engulf = c["close"] < c["open"] and body_ratio > 0.6
+            if (is_pin_bar or is_bearish_engulf):
+                if c["low"] < df["low"].iloc[max(0,i-3):i].min():
+                    return {"index": i, "price": c["low"], "wick_ratio": round(wick_ratio, 2), "type": "pin_bar" if is_pin_bar else "engulf"}
         else:
             upper_wick = c["high"] - max(c["open"], c["close"])
             wick_ratio = upper_wick / candle_range
-            body = abs(c["close"] - c["open"])
-            body_ratio = body / candle_range
-
-            is_liquidity_candle = wick_ratio > 0.4
-            is_strong_bullish = c["close"] > c["open"] and body_ratio > 0.5
-
-            if (is_liquidity_candle or is_strong_bullish) and c["high"] > df["high"].iloc[i - 1]:
-                return {"index": i, "price": c["high"], "wick_ratio": round(wick_ratio, 2)}
-
+            is_pin_bar = wick_ratio > 0.35 and body_ratio < 0.5
+            is_bullish_engulf = c["close"] > c["open"] and body_ratio > 0.6
+            if (is_pin_bar or is_bullish_engulf):
+                if c["high"] > df["high"].iloc[max(0,i-3):i].max():
+                    return {"index": i, "price": c["high"], "wick_ratio": round(wick_ratio, 2), "type": "pin_bar" if is_pin_bar else "engulf"}
     return None
-
-
 def find_ob(df, idm_idx, direction):
-    """
-    OB: آخر شمعة عكسية أدت للحركة القوية مباشرة
-    - نبحث أقرب شمعة عكسية للـ IDM والشمعة بعدها في نفس اتجاه الحركة
-    - جسم واضح فوق 50%
-    - لو ما لقينا، نوسع البحث بدون شرط الشمعة التالية
-    """
+    """OB = آخر شمعة عكسية قبل الحركة القوية، مباشرة تحت IDM"""
     if idm_idx is None or idm_idx < 2:
         return None
-
-    # بحث ضيق أولاً: 5 شمعات قبل IDM مع شرط الشمعة التالية
-    for i in range(idm_idx - 1, max(idm_idx - 6, 0), -1):
+    # بحث ضيق أولاً: 6 شمعات
+    for i in range(idm_idx - 1, max(idm_idx - 7, 0), -1):
         c = df.iloc[i]
-        body = abs(c["close"] - c["open"])
         candle_range = c["high"] - c["low"]
-        if candle_range == 0:
-            continue
-        if body / candle_range < 0.5:
-            continue
-        next_c = df.iloc[i + 1] if i + 1 < len(df) else None
+        if candle_range == 0: continue
+        body = abs(c["close"] - c["open"])
+        if body / candle_range < 0.45: continue
         if direction == "bullish" and c["close"] < c["open"]:
-            if next_c is not None and next_c["close"] > next_c["open"]:
-                return {"top": c["open"], "bottom": c["close"], "index": i}
+            if i + 1 < len(df) and df["close"].iloc[i+1] > df["open"].iloc[i+1]:
+                return {"top": c["open"], "bottom": c["close"], "index": i, "body_ratio": round(body/candle_range, 2)}
         elif direction == "bearish" and c["close"] > c["open"]:
-            if next_c is not None and next_c["close"] < next_c["open"]:
-                return {"top": c["close"], "bottom": c["open"], "index": i}
-
-    # بحث موسع: 10 شمعات بدون شرط الشمعة التالية
-    for i in range(idm_idx - 1, max(idm_idx - 11, 0), -1):
+            if i + 1 < len(df) and df["close"].iloc[i+1] < df["open"].iloc[i+1]:
+                return {"top": c["close"], "bottom": c["open"], "index": i, "body_ratio": round(body/candle_range, 2)}
+    # بحث موسع: 12 شمعة
+    for i in range(idm_idx - 1, max(idm_idx - 13, 0), -1):
         c = df.iloc[i]
-        body = abs(c["close"] - c["open"])
         candle_range = c["high"] - c["low"]
-        if candle_range == 0:
-            continue
-        if body / candle_range < 0.4:
-            continue
+        if candle_range == 0: continue
+        body = abs(c["close"] - c["open"])
+        if body / candle_range < 0.40: continue
         if direction == "bullish" and c["close"] < c["open"]:
-            return {"top": c["open"], "bottom": c["close"], "index": i}
+            return {"top": c["open"], "bottom": c["close"], "index": i, "body_ratio": 0}
         elif direction == "bearish" and c["close"] > c["open"]:
-            return {"top": c["close"], "bottom": c["open"], "index": i}
+            return {"top": c["close"], "bottom": c["open"], "index": i, "body_ratio": 0}
     return None
-
-
 def ob_sweeps_liquidity(df, ob, direction, highs, lows):
     """
     هل الـ OB فوق/تحت مستوى سيولة مهم؟ = OB أقوى
@@ -359,7 +362,43 @@ def is_price_in_ob(current, ob, buffer=0.2):
     return extended_bottom <= current <= extended_top
 
 
-def calc_quality(dbos, idm, ob, sweep, weekly_match, daily_match, in_ob, ob_sweep, has_news):
+def check_liquidity_above(df, direction, lookback=40):
+    """هل في سيولة محفزة في الاتجاه؟"""
+    if len(df) < lookback:
+        return False, 0
+    recent = df.tail(lookback)
+    current = df["close"].iloc[-1]
+    if direction == "bullish":
+        bsl_level = recent["high"].max()
+        distance_pct = (bsl_level - current) / current * 100
+        has_liquidity = 0.3 < distance_pct < 4.0
+        return has_liquidity, round(bsl_level, 4)
+    else:
+        ssl_level = recent["low"].min()
+        distance_pct = (current - ssl_level) / current * 100
+        has_liquidity = 0.3 < distance_pct < 4.0
+        return has_liquidity, round(ssl_level, 4)
+
+
+def calc_quality(dbos, idm, ob, sweep, weekly_match, daily_match, in_ob, ob_sweep, has_news, h4_of=0, h1_of=0, has_liquidity=False):
+    score = 0
+    if dbos: score += 20
+    if idm: score += 20
+    if ob: score += 20
+    # Order Flow
+    if h4_of >= 0.7: score += 12
+    elif h4_of >= 0.5: score += 6
+    if h1_of >= 0.7: score += 8
+    elif h1_of >= 0.5: score += 4
+    # سيولة محفزة
+    if has_liquidity: score += 10
+    # توافق الفريمات
+    if daily_match: score += 8
+    if weekly_match: score += 5
+    if in_ob: score += 5
+    if idm and idm.get("wick_ratio", 0) > 0.45: score += 5
+    if has_news: score -= 20
+    return max(0, min(100, score))
     score = 0
     if dbos: score += 20         # كسر هيكل مزدوج - أساسي
     if idm: score += 20          # بول باك - أساسي
@@ -449,73 +488,80 @@ def get_risk_advice(quality):
 
 def analyze(sym_name, yf_sym, tf, news, debug=False):
     df = get_candles(yf_sym, tf)
-    if df.empty or len(df) < 40:
+    if df.empty or len(df) < 50:
         if debug: return f"{sym_name} {tf}: ❌ بيانات فاضية"
         return None
 
-    trend = detect_trend(df)
+    # 1. الترند من الهيكل
+    trend = detect_trend_structure(df)
     if trend == "neutral":
         if debug: return f"{sym_name} {tf}: ❌ ترند محايد"
         return None
 
-    highs, lows = find_swings(df, lb=5)
-    dbos = detect_dbos(df, highs, lows, trend)
+    # 2. Order Flow H4
+    df_h4 = get_candles(yf_sym, "4h", 30)
+    h4_trend = detect_trend_structure(df_h4) if not df_h4.empty else "neutral"
+    h4_of = detect_order_flow(df_h4, trend) if not df_h4.empty else 0.0
+    if h4_trend != "neutral" and h4_trend != trend:
+        if debug: return f"{sym_name} {tf}: ❌ H4 عكس الاتجاه"
+        return None
+
+    # Order Flow H1
+    df_h1 = get_candles(yf_sym, "1h", 20)
+    h1_of = detect_order_flow(df_h1, trend) if not df_h1.empty else 0.0
+
+    # 3. DBOS
+    dbos = detect_dbos(df, trend)
     if not dbos:
         if debug: return f"{sym_name} {tf}: ❌ ما في DBOS"
         return None
 
+    # 4. IDM
     idm = find_idm(df, dbos["index"], trend)
     if not idm:
-        if debug: return f"{sym_name} {tf}: ❌ ما في IDM (ترند: {trend}، DBOS عند شمعة {dbos['index']})"
+        if debug: return f"{sym_name} {tf}: ❌ ما في IDM (DBOS عند {dbos['index']})"
         return None
 
+    # 5. OB
     ob = find_ob(df, idm["index"], trend)
     if not ob:
-        if debug: return f"{sym_name} {tf}: ❌ ما في OB (IDM عند {round(idm['price'],4)})"
+        if debug: return f"{sym_name} {tf}: ❌ ما في OB"
         return None
 
     current = df["close"].iloc[-1]
-    direction = trend  # alias عشان ما في لبس
-
-    # الشرط الأساسي: السعر لازم يكون فوق الـ OB وقادم له (bullish)
-    # أو تحت الـ OB وقادم له (bearish)
-    # مو بعيد عنه بأكثر من 3x حجم الـ OB
+    direction = trend
     ob_range = ob["top"] - ob["bottom"]
-    max_distance = ob_range * 15  # أقصى مسافة مقبولة
 
+    # السعر ما فات الـ OB
     if direction == "bullish":
-        if current < ob["bottom"] - ob_range:
-            if debug: return f"{sym_name} {tf}: ❌ السعر تحت OB (فات الفرصة)"
-            return None
-        if current > ob["top"] + max_distance:
-            if debug: return f"{sym_name} {tf}: ❌ السعر بعيد جداً عن OB"
+        if current < ob["bottom"] - ob_range * 0.5:
+            if debug: return f"{sym_name} {tf}: ❌ فات الـ OB"
             return None
     else:
-        if current > ob["top"] + ob_range:
-            if debug: return f"{sym_name} {tf}: ❌ السعر فوق OB (فات الفرصة)"
-            return None
-        if current < ob["bottom"] - max_distance:
-            if debug: return f"{sym_name} {tf}: ❌ السعر بعيد جداً عن OB"
+        if current > ob["top"] + ob_range * 0.5:
+            if debug: return f"{sym_name} {tf}: ❌ فات الـ OB"
             return None
 
-    in_ob = is_price_in_ob(current, ob)
-    sweep = check_liquidity_sweep(df, trend)
-    ob_sweep = ob_sweeps_liquidity(df, ob, trend, highs, lows)
+    in_ob = ob["bottom"] <= current <= ob["top"]
+    has_liquidity, liq_level = check_liquidity_above(df, trend)
+    sweep = False
+    ob_sweep = False
 
     # توافق الفريمات العليا
     df_d = get_candles(yf_sym, "1d", 50)
-    daily_trend = detect_trend(df_d) if not df_d.empty else "neutral"
+    daily_trend = detect_trend_structure(df_d) if not df_d.empty else "neutral"
     daily_match = daily_trend == trend
 
     df_w = get_candles(yf_sym, "1wk", 20)
-    weekly_trend = detect_trend(df_w) if not df_w.empty else "neutral"
+    weekly_trend = detect_trend_structure(df_w) if not df_w.empty else "neutral"
     weekly_match = weekly_trend == trend
 
-    quality = calc_quality(dbos, idm, ob, sweep, weekly_match, daily_match, in_ob, ob_sweep, news["has_news"])
+    quality = calc_quality(dbos, idm, ob, sweep, weekly_match, daily_match, in_ob, ob_sweep, news["has_news"], h4_of, h1_of, has_liquidity)
     if quality < 65:
         if debug: return f"{sym_name} {tf}: ❌ جودة منخفضة {quality}%"
         return None
 
+    # السيتاب لازم حديث
     ob_age = len(df) - ob.get("index", 0)
     if ob_age > 60:
         if debug: return f"{sym_name} {tf}: ❌ OB قديم ({ob_age} شمعة)"
@@ -525,35 +571,21 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
     if idm_age > 40:
         if debug: return f"{sym_name} {tf}: ❌ IDM قديم ({idm_age} شمعة)"
         return None
-    
-
 
     entry, sl, tp1, tp2, rr1, rr2 = calc_entry_sl_tp(ob, trend)
 
     return {
-        "symbol": sym_name,
-        "tf": tf,
-        "trend": trend,
-        "current": current,
-        "ob": ob,
-        "in_ob": in_ob,
-        "sweep": sweep,
-        "ob_sweep": ob_sweep,
-        "daily_match": daily_match,
-        "daily_trend": daily_trend,
-        "weekly_match": weekly_match,
-        "weekly_trend": weekly_trend,
-        "entry": entry,
-        "sl": sl,
-        "tp1": tp1,
-        "tp2": tp2,
-        "rr1": rr1,
-        "rr2": rr2,
-        "quality": quality,
-        "news": news,
+        "symbol": sym_name, "tf": tf, "trend": trend,
+        "current": current, "ob": ob, "in_ob": in_ob,
+        "sweep": sweep, "ob_sweep": ob_sweep,
+        "h4_of": h4_of, "h1_of": h1_of,
+        "has_liquidity": has_liquidity, "liq_level": liq_level,
+        "daily_match": daily_match, "daily_trend": daily_trend,
+        "weekly_match": weekly_match, "weekly_trend": weekly_trend,
+        "entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2,
+        "rr1": rr1, "rr2": rr2, "quality": quality, "news": news,
+        "idm_type": idm.get("type", ""), "idm_wick": idm.get("wick_ratio", 0),
     }
-
-
 def setup_msg(a):
     direction = "شراء 📈" if a["trend"] == "bullish" else "بيع 📉"
     arrow = "🟢" if a["trend"] == "bullish" else "🔴"
