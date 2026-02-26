@@ -995,7 +995,7 @@ async def cancel_update(update, context):
 
 
 # ===== جورنال - إرسال سيتاب مع أزرار =====
-async def send_setup_with_buttons(bot, a):
+async def send_setup_with_buttons(bot, a, custom_msg=None):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     global TRADE_COUNTER
     TRADE_COUNTER[0] += 1
