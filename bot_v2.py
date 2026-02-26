@@ -518,7 +518,7 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
         if debug: return f"{sym_name} {tf}: ❌ IDM قديم ({idm_age} شمعة)"
         return None
     
-    if debug: return f"{sym_name} {tf}: ✅ سيتاب جودة {quality}%"
+
 
     entry, sl, tp1, tp2, rr1, rr2 = calc_entry_sl_tp(ob, trend)
 
