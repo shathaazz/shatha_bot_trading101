@@ -991,6 +991,13 @@ def weekly_report_msg():
 
 
 # ===== الفحص =====
+def is_dd_safe():
+    """هل الحساب آمن للتداول؟"""
+    remaining_max = ACCOUNT["max_drawdown"] - ACCOUNT["drawdown_used"]
+    remaining_daily = ACCOUNT["daily_drawdown"] - ACCOUNT["daily_used"]
+    return remaining_max > 1.5 and remaining_daily > 0.5
+
+
 async def scan_markets(bot):
     # حماية DD - لو اقتربنا من الحد نوقف
     if not is_dd_safe():
@@ -1119,7 +1126,7 @@ async def debug_cmd(update, context):
                 result = analyze(name, yf_sym, tf, news, debug=True)
                 if isinstance(result, str):
                     msg += f"{result}\n"
-                elif result:
+                elif isinstance(result, dict):
                     msg += f"{name} {tf}: ✅ سيتاب جودة {result['quality']}%\n"
                 else:
                     msg += f"{name} {tf}: ❌ ما في سيتاب\n"
