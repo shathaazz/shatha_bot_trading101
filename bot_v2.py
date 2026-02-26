@@ -750,7 +750,7 @@ def setup_msg(a):
         action_header = f"⏳ ما وصل بعد - حطي ليمت أوردر"
         order_type = f"ليمت أوردر عند: {a['entry']}"
 
-    msg = f"{arrow} {direction} | {a['symbol']} | {a['tf']}\n"
+    msg = f"🔵 {arrow} {direction} | {a['symbol']} | {a['tf']}\n"
     msg += "─────────────────\n"
     msg += f"{w_icon} أسبوعي: {w_txt}  {d_icon} يومي: {d_txt}\n"
     if extras:
@@ -1204,6 +1204,208 @@ def is_dd_safe():
     return remaining_max > 1.5 and remaining_daily > 0.5
 
 
+
+# ============================================================
+# ===== استراتيجية Morning Star OB - مستقلة تماماً =====
+# ============================================================
+
+def detect_morning_star(df, direction="bullish"):
+    """
+    Morning Star Pattern:
+    1. شمعة هابطة كبيرة (جسم > 50%) تخترق قاع سابق = Liq Pool
+    2. شمعة ثانية صغيرة (جسم < 30% من الأولى)
+    3. شمعة ثالثة صاعدة تغلق فوق منتصف الشمعة الأولى
+    """
+    if len(df) < 10:
+        return None
+
+    # نبحث في آخر 20 شمعة
+    search_start = max(3, len(df) - 20)
+    for i in range(search_start, len(df) - 2):
+        c1 = df.iloc[i]      # الشمعة الأولى - هابطة كبيرة
+        c2 = df.iloc[i+1]    # الشمعة الثانية - صغيرة
+        c3 = df.iloc[i+2]    # الشمعة الثالثة - صاعدة
+
+        r1 = c1["high"] - c1["low"]
+        r2 = c2["high"] - c2["low"]
+        r3 = c3["high"] - c3["low"]
+
+        if r1 == 0 or r3 == 0:
+            continue
+
+        body1 = abs(c1["close"] - c1["open"])
+        body2 = abs(c2["close"] - c2["open"])
+        body3 = abs(c3["close"] - c3["open"])
+
+        if direction == "bullish":
+            # شمعة 1: هابطة كبيرة
+            if c1["close"] >= c1["open"]: continue
+            if body1 / r1 < 0.50: continue
+
+            # شمعة 1 تخترق قاع سابق = Liq Pool
+            prev_low = df["low"].iloc[max(0,i-10):i].min()
+            if c1["low"] >= prev_low: continue
+
+            # شمعة 2: صغيرة
+            if body2 > body1 * 0.30: continue
+
+            # شمعة 3: صاعدة تغلق فوق منتصف شمعة 1
+            if c3["close"] <= c3["open"]: continue
+            midpoint_c1 = (c1["open"] + c1["close"]) / 2
+            if c3["close"] <= midpoint_c1: continue
+
+            # BSL فوق = سيولة تجذبه
+            bsl = df["high"].iloc[max(0,i-20):i+3].max()
+            current = df["close"].iloc[-1]
+            distance_to_bsl = (bsl - current) / current * 100
+            has_bsl = 0.3 < distance_to_bsl < 5.0
+
+            # OB = الشمعة الأولى الهابطة
+            ob = {
+                "top": c1["open"],
+                "bottom": c1["close"],
+                "index": i
+            }
+
+            return {
+                "pattern_idx": i,
+                "c1_idx": i, "c2_idx": i+1, "c3_idx": i+2,
+                "ob": ob,
+                "entry": round(c3["close"], 5),
+                "sl": round(c1["low"] - (c1["high"] - c1["low"]) * 0.05, 5),
+                "bsl": round(bsl, 5),
+                "has_bsl": has_bsl,
+                "liq_pool": round(prev_low, 5),
+            }
+
+        else:  # bearish Evening Star
+            if c1["close"] <= c1["open"]: continue
+            if body1 / r1 < 0.50: continue
+            prev_high = df["high"].iloc[max(0,i-10):i].max()
+            if c1["high"] <= prev_high: continue
+            if body2 > body1 * 0.30: continue
+            if c3["close"] >= c3["open"]: continue
+            midpoint_c1 = (c1["open"] + c1["close"]) / 2
+            if c3["close"] >= midpoint_c1: continue
+            ssl = df["low"].iloc[max(0,i-20):i+3].min()
+            current = df["close"].iloc[-1]
+            distance_to_ssl = (current - ssl) / current * 100
+            has_ssl = 0.3 < distance_to_ssl < 5.0
+            ob = {"top": c1["close"], "bottom": c1["open"], "index": i}
+            return {
+                "pattern_idx": i,
+                "c1_idx": i, "c2_idx": i+1, "c3_idx": i+2,
+                "ob": ob,
+                "entry": round(c3["close"], 5),
+                "sl": round(c1["high"] + (c1["high"] - c1["low"]) * 0.05, 5),
+                "bsl": round(ssl, 5),
+                "has_bsl": has_ssl,
+                "liq_pool": round(prev_high, 5),
+            }
+    return None
+
+
+def analyze_morning_star(sym_name, yf_sym, tf, news, debug=False):
+    """تحليل Morning Star - مستقل تماماً عن الاستراتيجية الأولى"""
+    if tf not in ["1h", "4h"]:
+        return None
+
+    df = get_candles(yf_sym, tf)
+    if df.empty or len(df) < 30:
+        if debug: return f"🌟 {sym_name} {tf}: بيانات فاضية"
+        return None
+
+    # الترند من H4
+    df_h4 = get_candles(yf_sym, "4h", 30)
+    h4_trend = detect_trend_structure(df_h4) if not df_h4.empty else "neutral"
+    if h4_trend == "neutral":
+        if debug: return f"🌟 {sym_name} {tf}: H4 محايد"
+        return None
+
+    # Morning Star في اتجاه H4
+    pattern = detect_morning_star(df, h4_trend)
+    if not pattern:
+        if debug: return f"🌟 {sym_name} {tf}: ما في Morning Star"
+        return None
+
+    # Pattern لازم حديث (آخر 3 شمعات = آخر شيء في الكود)
+    if pattern["c3_idx"] < len(df) - 3:
+        if debug: return f"🌟 {sym_name} {tf}: Pattern قديم"
+        return None
+
+    current = df["close"].iloc[-1]
+    entry = pattern["entry"]
+    sl = pattern["sl"]
+    risk = abs(entry - sl)
+    if risk <= 0:
+        return None
+
+    tp1 = round(entry + risk * 2.0, 5) if h4_trend == "bullish" else round(entry - risk * 2.0, 5)
+    tp2 = round(entry + risk * 4.0, 5) if h4_trend == "bullish" else round(entry - risk * 4.0, 5)
+
+    # جودة بسيطة
+    quality = 70
+    if pattern["has_bsl"]: quality += 15
+    if news["has_news"]: quality -= 20
+    quality = max(0, min(100, quality))
+
+    if quality < 65:
+        if debug: return f"🌟 {sym_name} {tf}: جودة منخفضة {quality}%"
+        return None
+
+    return {
+        "strategy": "morning_star",
+        "symbol": sym_name, "tf": tf,
+        "trend": h4_trend,
+        "current": current,
+        "entry": entry, "sl": sl,
+        "tp1": tp1, "tp2": tp2,
+        "rr1": 2.0, "rr2": 4.0,
+        "quality": quality,
+        "ob": pattern["ob"],
+        "in_ob": True,
+        "has_bsl": pattern["has_bsl"],
+        "bsl": pattern["bsl"],
+        "liq_pool": pattern["liq_pool"],
+        "news": news,
+        "daily_match": True,
+        "weekly_match": False,
+        "daily_trend": h4_trend,
+        "weekly_trend": "neutral",
+        "sweep": False, "ob_sweep": False,
+        "h4_of": 0, "h1_of": 0,
+        "has_liquidity": pattern["has_bsl"],
+        "liq_level": pattern["bsl"],
+        "idm_type": "", "idm_wick": 0,
+    }
+
+
+def morning_star_msg(a):
+    """رسالة Morning Star - تبدأ بـ 🌟"""
+    direction = "شراء 📈" if a["trend"] == "bullish" else "بيع 📉"
+    risk, label = get_risk_advice(a["quality"])
+    risk_txt = f"❌ ما ندخل - {label}" if risk == 0 else f"💰 مخاطرة: {risk}% - {label}"
+    tv = TRADINGVIEW_LINKS.get(a["symbol"], "https://www.tradingview.com")
+    quality_bar = "█" * (a["quality"] // 20) + "░" * (5 - a["quality"] // 20)
+    sep = "─" * 17
+    lines = [
+        f"🌟 Morning Star OB | {direction}",
+        sep,
+        f"📊 {a['symbol']} | {a['tf']}",
+        sep,
+        f"⚡ دخول فوري عند: {a['entry']}",
+        f"🛑 ستوب: {a['sl']}  (تحت ذيل الشمعة الأولى)",
+        f"✅ هدف 1: {a['tp1']}  (1:2)",
+        f"🚀 هدف 2: {a['tp2']}  (1:4)",
+        f"السعر الحالي: {round(a['current'], 4)}",
+    ]
+    if a.get("has_bsl"):
+        lines.append(f"💧 BSL فوق عند: {a['bsl']}")
+    lines.append(f"🔻 Liq Pool عند: {a['liq_pool']}")
+    lines += [sep, f"جودة: {a['quality']}/100  {quality_bar}", risk_txt, f"📈 {tv}", "القرار إلك يا شذا 💪"]
+    return "\n".join(lines)
+
+
 async def scan_markets(bot):
     # حماية DD - لو اقتربنا من الحد نوقف
     if not is_dd_safe():
@@ -1245,10 +1447,31 @@ async def scan_markets(bot):
                     found.append(r)
             except Exception as e:
                 logger.error(f"خطأ {name} {tf}: {e}")
+    # Morning Star Strategy - مستقلة تماماً
+    for name, yf_sym in SYMBOLS.items():
+        for tf in ["4h", "1h"]:
+            key = f"ms_{name}_{tf}"
+            last_sent = SENT_SETUPS.get(key)
+            if last_sent:
+                hours_ago = (now_ts - last_sent).total_seconds() / 3600
+                if hours_ago < 4:
+                    continue
+            try:
+                ms = analyze_morning_star(name, yf_sym, tf, news)
+                if ms:
+                    found.append(ms)
+                    SENT_SETUPS[key] = datetime.now()
+            except Exception as e:
+                logger.error(f"Morning Star خطأ {name} {tf}: {e}")
+
     if found:
         found.sort(key=lambda x: x["quality"], reverse=True)
         for s in found:
-            await send_setup_with_buttons(bot, s)
+            if s.get("strategy") == "morning_star":
+                msg_text = morning_star_msg(s)
+                await send_setup_with_buttons(bot, s, custom_msg=msg_text)
+            else:
+                await send_setup_with_buttons(bot, s)
             SENT_SETUPS[f"{s['symbol']}_{s['tf']}"] = datetime.now()
             await asyncio.sleep(2)
         return True
