@@ -175,7 +175,7 @@ def detect_dbos(df, highs, lows, direction):
                 continue
             # الضلع الواحد: من h1 لـ h2 بدون تراجع كبير
             seg = df.iloc[h1[0]:h2[0]+1]
-            if len(seg) < 2 or len(seg) > 20:
+            if len(seg) < 2 or len(seg) > 50:
                 continue
             move = h2[1] - df["low"].iloc[h1[0]:h2[0]+1].min()
             max_pullback = 0
@@ -187,7 +187,7 @@ def detect_dbos(df, highs, lows, direction):
             if move > 0 and max_pullback / move > 0.50:
                 continue
             # تأكد الكسر واضح
-            for j in range(h2[0], min(h2[0]+5, len(df))):
+            for j in range(h2[0], min(h2[0]+10, len(df))):
                 if df["close"].iloc[j] > h1[1]:
                     return {"index": j, "price": h1[1], "sweep_level": df["low"].iloc[h1[0]:h2[0]+1].min()}
     elif direction == "bearish" and len(lows) >= 2:
@@ -197,7 +197,7 @@ def detect_dbos(df, highs, lows, direction):
             if l2[1] >= l1[1]:
                 continue
             seg = df.iloc[l1[0]:l2[0]+1]
-            if len(seg) < 2 or len(seg) > 20:
+            if len(seg) < 2 or len(seg) > 50:
                 continue
             move = df["high"].iloc[l1[0]:l2[0]+1].max() - l2[1]
             max_pullback = 0
@@ -207,7 +207,7 @@ def detect_dbos(df, highs, lows, direction):
                     max_pullback = pb
             if move > 0 and max_pullback / move > 0.50:
                 continue
-            for j in range(l2[0], min(l2[0]+5, len(df))):
+            for j in range(l2[0], min(l2[0]+10, len(df))):
                 if df["close"].iloc[j] < l1[1]:
                     return {"index": j, "price": l1[1], "sweep_level": df["high"].iloc[l1[0]:l2[0]+1].max()}
     return None
