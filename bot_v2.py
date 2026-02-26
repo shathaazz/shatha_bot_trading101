@@ -439,30 +439,31 @@ def get_risk_advice(quality):
     return round(risk, 2), label
 
 
-def analyze(sym_name, yf_sym, tf, news):
+def analyze(sym_name, yf_sym, tf, news, debug=False):
     df = get_candles(yf_sym, tf)
     if df.empty or len(df) < 40:
+        if debug: return f"{sym_name} {tf}: ❌ بيانات فاضية"
         return None
 
-    # الترند
     trend = detect_trend(df)
     if trend == "neutral":
+        if debug: return f"{sym_name} {tf}: ❌ ترند محايد"
         return None
 
-    # DBOS
     highs, lows = find_swings(df, lb=5)
     dbos = detect_dbos(df, highs, lows, trend)
     if not dbos:
+        if debug: return f"{sym_name} {tf}: ❌ ما في DBOS"
         return None
 
-    # IDM - لازم يجي بعد الكسر
     idm = find_idm(df, dbos["index"], trend)
     if not idm:
+        if debug: return f"{sym_name} {tf}: ❌ ما في IDM (ترند: {trend}، DBOS عند شمعة {dbos['index']})"
         return None
 
-    # OB - قبل IDM
     ob = find_ob(df, idm["index"], trend)
     if not ob:
+        if debug: return f"{sym_name} {tf}: ❌ ما في OB (IDM عند {round(idm['price'],4)})"
         return None
 
     current = df["close"].iloc[-1]
@@ -1097,6 +1098,23 @@ async def scan_cmd(update, context):
         await update.message.reply_text(random.choice(NO_SETUP_MSGS))
 
 
+async def debug_cmd(update, context):
+    """تشخيص - يرسل وش يصير مع كل زوج"""
+    news = check_news()
+    msg = "🔍 تشخيص كامل:\n─────────────────\n"
+    for name, yf_sym in SYMBOLS.items():
+        for tf in ["4h", "1h"]:
+            try:
+                result = analyze(name, yf_sym, tf, news, debug=True)
+                if isinstance(result, str):
+                    msg += f"{result}\n"
+                elif result:
+                    msg += f"{name} {tf}: ✅ سيتاب جودة {result['quality']}%\n"
+            except Exception as e:
+                msg += f"{name} {tf}: ⚠️ خطأ: {str(e)[:30]}\n"
+    await update.message.reply_text(msg)
+
+
 async def advice_cmd(update, context):
     await update.message.reply_text(daily_advice_msg())
 
@@ -1134,6 +1152,7 @@ async def main():
     app.add_handler(CommandHandler("scan", scan_cmd))
     app.add_handler(CommandHandler("advice", advice_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(CommandHandler("debug", debug_cmd))
     app.add_handler(CommandHandler("progress", progress_cmd))
     app.add_handler(CommandHandler("journal", journal_cmd))
     app.add_handler(CallbackQueryHandler(handle_callback))
