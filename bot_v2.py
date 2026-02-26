@@ -892,14 +892,29 @@ async def handle_callback(update, context):
             if result == "tp1":
                 t["result_r"] = 2.0
                 t["status"] = "closed"
+                DAILY_RISK["consecutive_losses"] = 0
                 msg = f"✅ هدف 1 وصل! +2R على {t['symbol']} 🎯"
             elif result == "tp2":
                 t["result_r"] = 4.0
                 t["status"] = "closed"
+                DAILY_RISK["consecutive_losses"] = 0
                 msg = f"🚀 هدف 2 وصل! +4R على {t['symbol']} 🔥"
             else:
                 t["result_r"] = -1.0
                 t["status"] = "closed"
+                risk_used = t.get("risk", 1.0)
+                DAILY_RISK["daily_loss_pct"] += risk_used
+                DAILY_RISK["consecutive_losses"] += 1
+                # Daily Risk Breaker
+                if DAILY_RISK["consecutive_losses"] >= 2:
+                    DAILY_RISK["trading_stopped"] = True
+                    DAILY_RISK["stop_reason"] = "ستوبين متتاليين"
+                elif DAILY_RISK["daily_loss_pct"] >= 2.0:
+                    DAILY_RISK["trading_stopped"] = True
+                    DAILY_RISK["stop_reason"] = f"خسارة {DAILY_RISK['daily_loss_pct']:.1f}% اليوم"
+                if DAILY_RISK["trading_stopped"]:
+                    stop_msg = f"🛑 Daily Risk Breaker! السبب: {DAILY_RISK['stop_reason']}\nما في إشارات لباقي اليوم 💪\nبكرة تعود تلقائياً"
+                    await context.bot.send_message(chat_id=CHAT_ID, text=stop_msg)
                 msg = f"🔴 ستوب على {t['symbol']} | -1R - كل صفقة خاسرة درس، واصلي 💪"
             await query.edit_message_reply_markup(reply_markup=None)
             await context.bot.send_message(chat_id=CHAT_ID, text=msg)
@@ -1015,6 +1030,10 @@ async def scan_markets(bot):
             )
         return False
 
+    # Daily Risk Breaker
+    if DAILY_RISK["trading_stopped"]:
+        return False
+
     news = check_news()
     found = []
     for name, yf_sym in SYMBOLS.items():
@@ -1069,6 +1088,13 @@ async def trading_loop(bot):
                 await bot.send_message(chat_id=CHAT_ID, text=challenge_progress_msg())
                 ACCOUNT["daily_used"] = 0.0
                 ACCOUNT["trades_today"] = 0
+                # Reset Daily Risk Breaker
+                if DAILY_RISK["trading_stopped"]:
+                    DAILY_RISK["trading_stopped"] = False
+                    DAILY_RISK["consecutive_losses"] = 0
+                    DAILY_RISK["daily_loss_pct"] = 0.0
+                    DAILY_RISK["stop_reason"] = ""
+                    await bot.send_message(chat_id=CHAT_ID, text="✅ يوم جديد! الإشارات عادت - تداولي بحكمة 💪")
                 last_advice_day = today
 
             # تقرير الجمعة
@@ -1088,7 +1114,7 @@ async def trading_loop(bot):
             # مراقبة الصفقات النشطة
             await monitor_trades(bot)
 
-            await asyncio.sleep(3600)
+            await asyncio.sleep(1800)
 
         except Exception as e:
             logger.error(f"خطأ: {e}")
