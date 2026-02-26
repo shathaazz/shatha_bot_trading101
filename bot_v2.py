@@ -1458,9 +1458,9 @@ async def scan_markets(bot):
                     continue
             try:
                 ms = analyze_morning_star(name, yf_sym, tf, news)
-                if ms:
+                if ms and isinstance(ms, dict):
+                    ms["_sent_key"] = key
                     found.append(ms)
-                    SENT_SETUPS[key] = datetime.now()
             except Exception as e:
                 logger.error(f"Morning Star خطأ {name} {tf}: {e}")
 
@@ -1470,9 +1470,10 @@ async def scan_markets(bot):
             if s.get("strategy") == "morning_star":
                 msg_text = morning_star_msg(s)
                 await send_setup_with_buttons(bot, s, custom_msg=msg_text)
+                SENT_SETUPS[s.get("_sent_key", f"ms_{s['symbol']}_{s['tf']}")] = datetime.now()
             else:
                 await send_setup_with_buttons(bot, s)
-            SENT_SETUPS[f"{s['symbol']}_{s['tf']}"] = datetime.now()
+                SENT_SETUPS[f"{s['symbol']}_{s['tf']}"] = datetime.now()
             await asyncio.sleep(2)
         return True
     return False
