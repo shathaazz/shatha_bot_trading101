@@ -476,17 +476,19 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
     max_distance = ob_range * 15  # أقصى مسافة مقبولة
 
     if direction == "bullish":
-        # السعر لازم فوق الـ OB أو داخله
         if current < ob["bottom"] - ob_range:
-            return None  # السعر تحت الـ OB = فات الفرصة
+            if debug: return f"{sym_name} {tf}: ❌ السعر تحت OB (فات الفرصة)"
+            return None
         if current > ob["top"] + max_distance:
-            return None  # السعر بعيد جداً = OB قديم
+            if debug: return f"{sym_name} {tf}: ❌ السعر بعيد جداً عن OB"
+            return None
     else:
-        # السعر لازم تحت الـ OB أو داخله
         if current > ob["top"] + ob_range:
-            return None  # السعر فوق الـ OB = فات الفرصة
+            if debug: return f"{sym_name} {tf}: ❌ السعر فوق OB (فات الفرصة)"
+            return None
         if current < ob["bottom"] - max_distance:
-            return None  # السعر بعيد جداً
+            if debug: return f"{sym_name} {tf}: ❌ السعر بعيد جداً عن OB"
+            return None
 
     in_ob = is_price_in_ob(current, ob)
     sweep = check_liquidity_sweep(df, trend)
@@ -503,17 +505,20 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
 
     quality = calc_quality(dbos, idm, ob, sweep, weekly_match, daily_match, in_ob, ob_sweep, news["has_news"])
     if quality < 65:
+        if debug: return f"{sym_name} {tf}: ❌ جودة منخفضة {quality}%"
         return None
 
-    # تأكد إن السيتاب حديث على نفس الفريم - الـ OB لازم يكون في آخر 40 شمعة
     ob_age = len(df) - ob.get("index", 0)
     if ob_age > 60:
+        if debug: return f"{sym_name} {tf}: ❌ OB قديم ({ob_age} شمعة)"
         return None
 
-    # الـ IDM لازم يكون بعد الـ OB وفي آخر 30 شمعة
     idm_age = len(df) - idm["index"]
     if idm_age > 40:
+        if debug: return f"{sym_name} {tf}: ❌ IDM قديم ({idm_age} شمعة)"
         return None
+    
+    if debug: return f"{sym_name} {tf}: ✅ سيتاب جودة {quality}%"
 
     entry, sl, tp1, tp2, rr1, rr2 = calc_entry_sl_tp(ob, trend)
 
@@ -1011,6 +1016,11 @@ async def scan_markets(bot):
                 r = analyze(name, yf_sym, tf, news)
                 if r:
                     found.append(r)
+                else:
+                    # تشخيص مؤقت
+                    dbg = analyze(name, yf_sym, tf, news, debug=True)
+                    if isinstance(dbg, str) and "سيتاب" not in dbg:
+                        logger.info(f"SCAN REJECT: {dbg}")
             except Exception as e:
                 logger.error(f"خطأ {name} {tf}: {e}")
     if found:
