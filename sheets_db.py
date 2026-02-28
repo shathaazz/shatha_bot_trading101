@@ -1,18 +1,12 @@
-"""
-sheets_db.py  ←  ضعيه في نفس مجلد bot.py
-ذاكرة البوت الدائمة عبر Google Sheets
-"""
-
+import tempfile
+import os
 import json
 import logging
-import os
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1RoSDo0yWZMiFog0UBbTeOQyi9l7iMZ2kbH7nNLjRCQo")
-import tempfile
-
+# ─── اتصال Google Sheets ───────────────────────────
 _creds_raw = os.environ.get("GOOGLE_CREDENTIALS", "")
 if _creds_raw:
     _tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
@@ -22,12 +16,10 @@ if _creds_raw:
 else:
     CREDENTIALS_FILE = "credentials.json"
 
+SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1RoSDo0yWZMiFog0UBbTeOQyi9l7iMZ2kbH7nNLjRCQo")
+
 _service = None
 
-
-# ─────────────────────────────────────────
-# الاتصال
-# ─────────────────────────────────────────
 
 def _get_service():
     global _service
@@ -99,7 +91,6 @@ def _read(range_name):
 
 
 def _find_row(sheet, col, value):
-    """يرجع رقم الصف (1-based) اللي فيه value في العمود col"""
     data = _read(f"{sheet}!A:Z")
     for i, row in enumerate(data):
         if len(row) > col and str(row[col]) == str(value):
@@ -107,17 +98,12 @@ def _find_row(sheet, col, value):
     return None
 
 
-# ─────────────────────────────────────────
-# إعداد الشيت (شغّليه مرة واحدة)
-# ─────────────────────────────────────────
+# ─── إعداد الشيت ───────────────────────────────────
 
 def setup_sheets():
-    """ينشئ كل الـ Tabs والعناوين - مرة واحدة عند أول تشغيل"""
     svc = _get_service()
     if not svc:
         return False
-
-    # إنشاء Tabs لو ما موجودة
     tabs = ["Journal", "Account", "Weights", "Stats"]
     try:
         meta = svc.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
@@ -134,15 +120,12 @@ def setup_sheets():
     except Exception as e:
         logger.error(f"خطأ إنشاء Tabs: {e}")
 
-    # عناوين Journal
     _write("Journal!A1:P1", [[
         "ID", "التاريخ", "الزوج", "الفريم", "الاتجاه",
         "الدخول", "الستوب", "هدف1", "هدف2",
         "المخاطرة%", "الحالة", "النتيجة R",
         "الجودة%", "H4 Flow", "يومي؟", "أسبوعي؟"
     ]])
-
-    # عناوين Account
     _write("Account!A1:B1", [["المؤشر", "القيمة"]])
     _write("Account!A2:A12", [
         ["اسم الشركة"], ["المرحلة"], ["الرصيد الأصلي"],
@@ -150,25 +133,17 @@ def setup_sheets():
         ["دروداون يومي%"], ["صفقات الأسبوع"], ["صفقات اليوم"],
         ["آخر تحديث"], ["وقف التداول؟"]
     ])
-
-    # عناوين Weights
     _write("Weights!A1:B1", [["الوزن", "القيمة"]])
-
-    # عناوين Stats
     _write("Stats!A1:F1", [[
         "الأسبوع", "إجمالي", "رابحة", "خاسرة", "نسبة الفوز%", "مجموع R"
     ]])
-
     logger.info("✅ تم إعداد الشيت بنجاح")
     return True
 
 
-# ─────────────────────────────────────────
-# Journal
-# ─────────────────────────────────────────
+# ─── Journal ───────────────────────────────────────
 
 def journal_add(trade_id, trade):
-    """يضيف صفقة جديدة"""
     _append("Journal!A:P", [[
         trade_id,
         trade.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M")),
@@ -190,7 +165,6 @@ def journal_add(trade_id, trade):
 
 
 def journal_set_status(trade_id, status, risk=None):
-    """يحدث حالة الصفقة"""
     row = _find_row("Journal", 0, trade_id)
     if not row:
         return
@@ -206,7 +180,6 @@ def journal_set_status(trade_id, status, risk=None):
 
 
 def journal_set_result(trade_id, result_r):
-    """يحدث نتيجة الصفقة"""
     row = _find_row("Journal", 0, trade_id)
     if not row:
         return
@@ -216,7 +189,6 @@ def journal_set_result(trade_id, result_r):
 
 
 def journal_load():
-    """يحمل الجورنال كاملاً عند تشغيل البوت"""
     data = _read("Journal!A2:P")
     journal = {}
     dir_map = {"شراء 📈": "bullish", "بيع 📉": "bearish"}
@@ -243,9 +215,9 @@ def journal_load():
                 return default
 
         journal[tid] = {
-            "timestamp": row[1]  if len(row) > 1  else "",
-            "symbol":    row[2]  if len(row) > 2  else "",
-            "tf":        row[3]  if len(row) > 3  else "",
+            "timestamp": row[1]  if len(row) > 1 else "",
+            "symbol":    row[2]  if len(row) > 2 else "",
+            "tf":        row[3]  if len(row) > 3 else "",
             "direction": dir_map.get(row[4], "bullish") if len(row) > 4 else "bullish",
             "entry":     safe_float(5),
             "sl":        safe_float(6),
@@ -255,15 +227,13 @@ def journal_load():
             "status":    status_map.get(row[10], "pending") if len(row) > 10 else "pending",
             "result_r":  safe_float(11, None),
             "quality":   safe_int(12),
-            "yf_sym":    "",  # نحسبه من SYMBOLS
+            "yf_sym":    "",
         }
     logger.info(f"📋 Journal: حمّلت {len(journal)} صفقة")
     return journal
 
 
-# ─────────────────────────────────────────
-# Account
-# ─────────────────────────────────────────
+# ─── Account ───────────────────────────────────────
 
 def account_save(account, daily_risk):
     _write("Account!B2:B12", [
@@ -315,9 +285,7 @@ def account_load():
     return result
 
 
-# ─────────────────────────────────────────
-# Weights
-# ─────────────────────────────────────────
+# ─── Weights ───────────────────────────────────────
 
 def weights_save(weights):
     rows = [[k, round(v, 4)] for k, v in weights.items()]
@@ -338,9 +306,7 @@ def weights_load():
     return w
 
 
-# ─────────────────────────────────────────
-# Stats
-# ─────────────────────────────────────────
+# ─── Stats ─────────────────────────────────────────
 
 def stats_add_week(journal):
     closed = [t for t in journal.values() if t.get("status") == "closed"]
