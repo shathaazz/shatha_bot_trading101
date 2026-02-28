@@ -3,3 +3,6 @@ yfinance
 pandas
 pytz
 requests
+google-auth
+google-auth-httplib2
+google-api-python-client
