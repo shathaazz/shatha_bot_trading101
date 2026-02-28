@@ -373,7 +373,11 @@ def detect_order_flow(df, direction, lookback=10):
 
 
 def detect_dbos(df, direction=None, highs=None, lows=None):
-    """DBOS: ضلع واحد قوي يكسر قمتين/قاعين سابقتين"""
+    """
+    DBOS: ضلع واحد يكسر قمتين/قاعين سابقتين بإغلاق شمعة (مو بذيل)
+    - قمتان سابقتان: h1 (أبعد) و h2 (أقرب وأعلى)
+    - الضلع يغلق فوق h2 = كسر القمتين بإغلاق ✅
+    """
     lb = 5
     h_list, l_list = [], []
     for i in range(lb, len(df) - lb):
@@ -384,8 +388,9 @@ def detect_dbos(df, direction=None, highs=None, lows=None):
 
     if direction == "bullish" and len(h_list) >= 2:
         for i in range(len(h_list)-1, 0, -1):
-            h2_idx, h2_val = h_list[i]
-            h1_idx, h1_val = h_list[i-1]
+            h2_idx, h2_val = h_list[i]    # القمة الأحدث والأعلى
+            h1_idx, h1_val = h_list[i-1]  # القمة الأقدم
+            # h2 لازم أعلى من h1 = قمتان تصاعديتان
             if h2_val <= h1_val: continue
             segment = df.iloc[h1_idx:h2_idx+1]
             if len(segment) < 2 or len(segment) > 60: continue
@@ -393,14 +398,26 @@ def detect_dbos(df, direction=None, highs=None, lows=None):
             if move_size <= 0: continue
             max_pb = max([segment["high"].iloc[k-1] - segment["low"].iloc[k] for k in range(1, len(segment))], default=0)
             if max_pb / move_size > 0.40: continue
+            # الكسر = جسم الشمعة يتجاوز h2 (مو بالذيل)
+            # جسم الشمعة = min(open, close) إلى max(open, close)
             for j in range(h2_idx, min(h2_idx+8, len(df))):
-                if df["close"].iloc[j] > h1_val:
-                    return {"index": j, "price": h1_val, "impulse_start": h1_idx, "sweep_level": segment["low"].min()}
+                candle = df.iloc[j]
+                body_top = max(candle["open"], candle["close"])
+                # أعلى الجسم لازم يكون فوق h2
+                if body_top > h2_val:
+                    return {
+                        "index": j,
+                        "price": h2_val,
+                        "impulse_start": h1_idx,
+                        "sweep_level": segment["low"].min(),
+                        "broke_two": True
+                    }
 
     elif direction == "bearish" and len(l_list) >= 2:
         for i in range(len(l_list)-1, 0, -1):
-            l2_idx, l2_val = l_list[i]
-            l1_idx, l1_val = l_list[i-1]
+            l2_idx, l2_val = l_list[i]    # القاع الأحدث والأدنى
+            l1_idx, l1_val = l_list[i-1]  # القاع الأقدم
+            # l2 لازم أدنى من l1
             if l2_val >= l1_val: continue
             segment = df.iloc[l1_idx:l2_idx+1]
             if len(segment) < 2 or len(segment) > 60: continue
@@ -408,9 +425,19 @@ def detect_dbos(df, direction=None, highs=None, lows=None):
             if move_size <= 0: continue
             max_pb = max([segment["high"].iloc[k] - segment["low"].iloc[k-1] for k in range(1, len(segment))], default=0)
             if max_pb / move_size > 0.40: continue
+            # الكسر = جسم الشمعة يتجاوز l2 (مو بالذيل)
             for j in range(l2_idx, min(l2_idx+8, len(df))):
-                if df["close"].iloc[j] < l1_val:
-                    return {"index": j, "price": l1_val, "impulse_start": l1_idx, "sweep_level": segment["high"].max()}
+                candle = df.iloc[j]
+                body_bottom = min(candle["open"], candle["close"])
+                # أسفل الجسم لازم يكون تحت l2
+                if body_bottom < l2_val:
+                    return {
+                        "index": j,
+                        "price": l2_val,
+                        "impulse_start": l1_idx,
+                        "sweep_level": segment["high"].max(),
+                        "broke_two": True
+                    }
     return None
 def find_idm(df, dbos_idx, direction):
     """IDM = أول قاع/قمة بعد DBOS = سحب السيولة بذيل واضح"""
@@ -572,24 +599,38 @@ def calc_quality(dbos, idm, ob, sweep, weekly_match, daily_match, in_ob, ob_swee
     return max(0, min(100, score))
 
 
-def calc_entry_sl_tp(ob, direction):
+def calc_entry_sl_tp(ob, direction, tf="1h"):
     """
-    الدخول: أعلى الـ OB تماماً (bullish) أو أسفله تماماً (bearish)
-    الستوب: تحت أسفل الـ OB بهامش 10% (bullish) أو فوق أعلاه (bearish)
+    الدخول: أعلى الـ OB (bullish) أو أسفله (bearish)
+    الستوب: تحت أسفل الـ OB + 15% هامش أمان
+    للسوينق H1/H4: الستوب الأدنى = 1.5x حجم الـ OB
     الأهداف: RR 1:2 و 1:4
     """
     ob_range = ob["top"] - ob["bottom"]
-    sl_buffer = ob_range * 0.1  # 10% تحت/فوق الـ OB
+
+    # هامش أمان 15% من حجم الـ OB
+    sl_buffer = ob_range * 0.15
+
+    # للسوينق: الستوب الأدنى = 1.5x حجم الـ OB من نقطة الدخول
+    swing_tf = tf in ["1h", "4h"]
+    min_risk = ob_range * 1.5 if swing_tf else ob_range * 1.1
 
     if direction == "bullish":
-        entry = round(ob["top"], 5)               # دخول عند أعلى الـ OB
-        sl = round(ob["bottom"] - sl_buffer, 5)   # ستوب تحت أسفل الـ OB
+        entry = round(ob["top"], 5)
+        sl_raw = ob["bottom"] - sl_buffer
+        # تأكد الريسك مو أقل من الحد الأدنى للسوينق
+        if swing_tf and (entry - sl_raw) < min_risk:
+            sl_raw = entry - min_risk
+        sl = round(sl_raw, 5)
         risk = entry - sl
         tp1 = round(entry + risk * 2.0, 5)
         tp2 = round(entry + risk * 4.0, 5)
     else:
-        entry = round(ob["bottom"], 5)             # دخول عند أسفل الـ OB
-        sl = round(ob["top"] + sl_buffer, 5)       # ستوب فوق أعلى الـ OB
+        entry = round(ob["bottom"], 5)
+        sl_raw = ob["top"] + sl_buffer
+        if swing_tf and (sl_raw - entry) < min_risk:
+            sl_raw = entry + min_risk
+        sl = round(sl_raw, 5)
         risk = sl - entry
         tp1 = round(entry - risk * 2.0, 5)
         tp2 = round(entry - risk * 4.0, 5)
@@ -713,6 +754,22 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
             if debug: return f"{sym_name} {tf}: ⏳ السعر بعيد عن OB - انتظار"
             return None
 
+    # حد أدنى لحجم الـ OB عشان الستوب يكون منطقي للسوينق
+    ob_size = ob["top"] - ob["bottom"]
+    min_ob_size = 0.0
+    if "BTC" in sym_name or "ETH" in sym_name:
+        min_ob_size = 300.0   # 300 دولار للكريبتو
+    elif "XAU" in sym_name:
+        min_ob_size = 3.0     # 3 دولار للذهب
+    elif "XAG" in sym_name:
+        min_ob_size = 0.05    # 5 سنت للفضة
+    else:
+        min_ob_size = 0.0020  # 20 pip للفوركس
+
+    if ob_size < min_ob_size:
+        if debug: return f"{sym_name} {tf}: ❌ OB صغير جداً ({round(ob_size, 4)} < {min_ob_size})"
+        return None
+
     in_ob = ob["bottom"] <= current <= ob["top"]
     has_liquidity, liq_level = check_liquidity_above(df, trend)
     sweep = False
@@ -748,7 +805,7 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
         if debug: return f"{sym_name} {tf}: ❌ IDM قديم ({idm_age} شمعة)"
         return None
 
-    entry, sl, tp1, tp2, rr1, rr2 = calc_entry_sl_tp(ob, trend)
+    entry, sl, tp1, tp2, rr1, rr2 = calc_entry_sl_tp(ob, trend, tf)
 
     return {
         "symbol": sym_name, "tf": tf, "trend": trend,
