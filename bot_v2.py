@@ -16,6 +16,58 @@ from telegram.ext import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ===== حفظ وتحميل البيانات =====
+BOT_DATA_FILE = "bot_data.json"
+
+def save_data():
+    """يحفظ كل البيانات في ملف JSON"""
+    try:
+        data = {
+            "account": ACCOUNT,
+            "daily_risk": DAILY_RISK,
+            "journal": {k: {
+                kk: vv for kk, vv in v.items() if kk != "analysis"
+            } for k, v in JOURNAL.items()},
+            "weights": WEIGHTS_MEMORY,
+        }
+        with open(BOT_DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+    except Exception as e:
+        logger.error(f"خطأ حفظ البيانات: {e}")
+
+def load_data():
+    """يحمل البيانات من الملف عند التشغيل"""
+    try:
+        if not os.path.exists(BOT_DATA_FILE):
+            return
+        with open(BOT_DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        # تحديث ACCOUNT
+        saved_acc = data.get("account", {})
+        for k, v in saved_acc.items():
+            if k in ACCOUNT:
+                ACCOUNT[k] = v
+
+        # تحديث DAILY_RISK
+        saved_risk = data.get("daily_risk", {})
+        for k, v in saved_risk.items():
+            if k in DAILY_RISK:
+                DAILY_RISK[k] = v
+
+        # تحديث JOURNAL
+        saved_journal = data.get("journal", {})
+        JOURNAL.update(saved_journal)
+
+        # تحديث WEIGHTS
+        saved_weights = data.get("weights", {})
+        for k, v in saved_weights.items():
+            WEIGHTS_MEMORY[k] = v
+
+        logger.info(f"✅ تم تحميل البيانات: {len(JOURNAL)} صفقة في الجورنال")
+    except Exception as e:
+        logger.error(f"خطأ تحميل البيانات: {e}")
+
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_TOKEN_HERE")
 CHAT_ID = os.environ.get("CHAT_ID", "YOUR_CHAT_ID_HERE")
 RIYADH_TZ = pytz.timezone("Asia/Riyadh")
@@ -1484,6 +1536,8 @@ async def scan_markets(bot):
 
 # ===== الحلقة الرئيسية =====
 async def trading_loop(bot):
+    # تحميل البيانات المحفوظة
+    load_data()
     phase_txt = {"challenge": "🔴 چالنج", "verification": "🟡 تحقق", "funded": "🟢 ممول"}.get(ACCOUNT["phase"], "")
     await bot.send_message(
         chat_id=CHAT_ID,
@@ -1519,6 +1573,7 @@ async def trading_loop(bot):
                     DAILY_RISK["daily_loss_pct"] = 0.0
                     DAILY_RISK["stop_reason"] = ""
                     await bot.send_message(chat_id=CHAT_ID, text="✅ يوم جديد! الإشارات عادت - تداولي بحكمة 💪")
+                save_data()
                 last_advice_day = today
 
             # تقرير الجمعة
