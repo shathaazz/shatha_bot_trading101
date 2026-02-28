@@ -1431,7 +1431,7 @@ async def trading_loop(bot):
                     await bot.send_message(chat_id=CHAT_ID, text="✅ يوم جديد! الإشارات عادت - تداولي بحكمة 💪")
                 save_data()
                 last_advice_day = today
-            if now.weekday() == 4 and now.hour == 20 and now.minute < 5:
+            if now.weekday() == 4 and now.hour >= 20:
                 if not hasattr(trading_loop, 'last_report') or trading_loop.last_report != today:
                     await bot.send_message(chat_id=CHAT_ID, text=weekly_report_msg())
                     trading_loop.last_report = today
