@@ -114,13 +114,13 @@ DAILY_TIPS = [
 # ===== جورنال =====
 JOURNAL        = {}
 TRADE_COUNTER  = [0]
-SENT_SETUPS    = {}  # key -> date string (يوم) عشان نمنع تكرار نفس الصفقة في اليوم
+SENT_SETUPS    = {}
 CHAT_ID        = os.environ.get("CHAT_ID", "YOUR_CHAT_ID_HERE")
 
 # ===== Daily Risk =====
 DAILY_RISK = {
     "trading_stopped":    False,
-    "stopped_until_date": None,   # date string لو إيقاف أسبوعي
+    "stopped_until_date": None,
     "loss_today":         False,
     "trades_entered_today": 0,
     "last_warning_hour":  -1,
@@ -226,11 +226,10 @@ def save_weights(weights):
 
 
 # ============================================================
-# ===== إعداد الحساب - محادثة أول تشغيل =====
+# ===== إعداد الحساب =====
 # ============================================================
 
 async def setup_start(update, context):
-    """أول تشغيل — يسأل عن بيانات الحساب"""
     await update.message.reply_text(
         "أهلاً! 👋\nخليني أعرف حسابك عشان أخدمك صح\n\n"
         "1️⃣ اسم شركة التمويل؟\n"
@@ -304,6 +303,7 @@ async def got_daily_dd(update, context):
         f"📅 دروداون يومي: {ACCOUNT['daily_drawdown']}%\n"
         f"─────────────────\n"
         f"البوت يراقب السوق الآن 24/7 👀\n\n"
+        f"/scan فحص فوري\n"
         f"/advice نصايح اليوم\n"
         f"/status حالة الحساب\n"
         f"/update تحديث الحساب"
@@ -487,15 +487,11 @@ def detect_order_flow(df, direction, lookback=10):
 
 
 def detect_liquidity_sweep(df, direction, lookback=50):
-    """
-    سحب سيولة: السعر يخترق قمة/قاع سابق بالذيل ثم يرجع ويغلق بالداخل
-    """
     if len(df) < lookback + 5:
         return False, 0.0
     search = df.iloc[-(lookback+5):-5]
     if direction == "bullish":
         ref_low = search["low"].min()
-        # آخر 5 شمعات: ذيل تحت الـ ref_low ثم إغلاق فوقه
         for i in range(len(df)-5, len(df)):
             c = df.iloc[i]
             if c["low"] < ref_low and c["close"] > ref_low:
@@ -510,9 +506,6 @@ def detect_liquidity_sweep(df, direction, lookback=50):
 
 
 def detect_dbos(df, direction):
-    """
-    DBOS: ضلع واحد يكسر قمتين سابقتين بإغلاق الجسم (مو الذيل)
-    """
     lb = 5
     h_list, l_list = [], []
     for i in range(lb, len(df) - lb):
@@ -530,7 +523,6 @@ def detect_dbos(df, direction):
             if len(segment) < 2 or len(segment) > 80: continue
             move_size = h2_val - segment["low"].min()
             if move_size <= 0: continue
-            # يكسر بإغلاق الجسم مو الذيل
             for j in range(h2_idx, min(h2_idx+8, len(df))):
                 candle = df.iloc[j]
                 body_close = candle["close"]
@@ -561,9 +553,6 @@ def detect_dbos(df, direction):
 
 
 def find_idm(df, dbos_idx, direction):
-    """
-    IDM: أول بول باك بعد DBOS — يكون واضح بذيل (pin bar) يسحب سيولة
-    """
     search_end = min(dbos_idx + 30, len(df))
     for i in range(dbos_idx + 1, search_end):
         c = df.iloc[i]
@@ -575,12 +564,9 @@ def find_idm(df, dbos_idx, direction):
         if direction == "bullish":
             lower_wick = min(c["open"], c["close"]) - c["low"]
             wick_ratio = lower_wick / candle_range
-            # pin bar واضح: ذيل > 40% من المدى
             is_pin_bar = wick_ratio > 0.40 and body_ratio < 0.55
-            # أو إنجلف هابط قوي
             is_engulf = c["close"] < c["open"] and body_ratio > 0.60
             if (is_pin_bar or is_engulf):
-                # يكسر أدنى سابق = يسحب سيولة
                 if c["low"] < df["low"].iloc[max(0,i-5):i].min():
                     return {
                         "index": i, "price": c["low"],
@@ -603,31 +589,18 @@ def find_idm(df, dbos_idx, direction):
 
 
 def find_ob(df, idm_idx, direction):
-    """
-    OB الصح: آخر شمعة عكسية قبل الحركة القوية التي أدت إلى IDM
-    - Bullish OB: آخر شمعة حمراء قبل الشمعة الخضراء القوية
-    - Bearish OB: آخر شمعة خضراء قبل الشمعة الحمراء القوية
-    البوكس = من أعلى الشمعة لأسفلها
-    """
     if idm_idx is None or idm_idx < 3:
         return None
-
-    # ابحث عن الشمعة الكبيرة (التي كسرت الهيكل)
-    # ثم OB = آخر شمعة عكسية قبلها
     search_start = max(0, idm_idx - 20)
 
     if direction == "bullish":
-        # نبحث عن آخر شمعة حمراء واضحة يتبعها شمعة خضراء كبيرة
         for i in range(idm_idx - 1, search_start, -1):
             c = df.iloc[i]
             candle_range = c["high"] - c["low"]
             if candle_range == 0: continue
             body = abs(c["close"] - c["open"])
             body_ratio = body / candle_range
-
-            # شمعة حمراء بجسم واضح
             if c["close"] < c["open"] and body_ratio > 0.45:
-                # الشمعة اللي بعدها خضراء وكبيرة
                 if i + 1 < len(df):
                     next_c = df.iloc[i+1]
                     next_body = abs(next_c["close"] - next_c["open"])
@@ -643,16 +616,13 @@ def find_ob(df, idm_idx, direction):
                             "candle_high": c["high"],
                             "candle_low":  c["low"],
                         }
-
-    else:  # bearish
+    else:
         for i in range(idm_idx - 1, search_start, -1):
             c = df.iloc[i]
             candle_range = c["high"] - c["low"]
             if candle_range == 0: continue
             body = abs(c["close"] - c["open"])
             body_ratio = body / candle_range
-
-            # شمعة خضراء بجسم واضح
             if c["close"] > c["open"] and body_ratio > 0.45:
                 if i + 1 < len(df):
                     next_c = df.iloc[i+1]
@@ -673,23 +643,16 @@ def find_ob(df, idm_idx, direction):
 
 
 def calc_sl_from_ob(ob, direction):
-    """
-    الستوب تحت/فوق OB بمسافة (swing trade) = تحت أدنى الشمعة أو فوق أعلاها
-    """
     ob_range = ob["top"] - ob["bottom"]
-    sl_buffer = ob_range * 0.20  # مسافة إضافية 20% من حجم OB
-
+    sl_buffer = ob_range * 0.20
     if direction == "bullish":
-        # الستوب تحت أدنى شمعة الـ OB بمسافة
         sl = round(ob["candle_low"] - sl_buffer, 5)
     else:
-        # الستوب فوق أعلى شمعة الـ OB بمسافة
         sl = round(ob["candle_high"] + sl_buffer, 5)
     return sl
 
 
 def get_pdh_pdl(yf_sym):
-    """Previous Day High/Low"""
     try:
         df = get_candles(yf_sym, "1d", 5)
         if len(df) < 2:
@@ -701,7 +664,6 @@ def get_pdh_pdl(yf_sym):
 
 
 def get_lwh_lwl(yf_sym):
-    """Last Week High/Low"""
     try:
         df = get_candles(yf_sym, "1wk", 5)
         if len(df) < 2:
@@ -713,7 +675,6 @@ def get_lwh_lwl(yf_sym):
 
 
 def check_bsl_ssl(df, direction, lookback=50):
-    """BSL/SSL: سيولة في الاتجاه"""
     if len(df) < lookback:
         return False, 0.0
     current = df["close"].iloc[-1]
@@ -730,20 +691,8 @@ def check_bsl_ssl(df, direction, lookback=50):
 
 def calc_quality_new(liq_sweep, h4_of, daily_of, has_bsl, has_pdh_pdl,
                      has_lwh_lwl, idm_wick, ob_body, hard_news):
-    """
-    نظام الجودة الجديد:
-    - Liquidity Sweep قبل DBOS = 30 نقطة (مهم جداً)
-    - H4 Order Flow = 20 نقطة
-    - Daily Order Flow = 15 نقطة
-    - BSL/SSL = 15 نقطة
-    - PDH/PDL = 10 نقطة
-    - LWH/LWL = 10 نقطة
-    المجموع = 100
-    أخبار CPI/NFP/FOMC = يلغي الصفقة كاملاً
-    """
     if hard_news:
-        return 0  # أخبار حرجة = لا يرسل
-
+        return 0
     w = WEIGHTS_MEMORY
     score = 0
     if liq_sweep:   score += 30 * w.get("liq_sweep", 1.0)
@@ -756,19 +705,10 @@ def calc_quality_new(liq_sweep, h4_of, daily_of, has_bsl, has_pdh_pdl,
     if has_lwh_lwl: score += 10 * w.get("lwh_lwl", 1.0)
     if idm_wick > 0.5: score += 3 * w.get("idm_wick", 1.0)
     if ob_body > 0.6:  score += 3 * w.get("ob_body",  1.0)
-
     return max(0, min(100, round(score)))
 
 
 def get_risk_new(quality):
-    """
-    نظام المخاطرة الجديد:
-    - جودة 90-100% → 1%
-    - جودة 80-89%  → 0.75%
-    - جودة 70-79%  → 0.5%
-    - أقل من 70%   → لا يرسل
-    تعديلات بناء على الحساب
-    """
     if quality < 70:
         return 0, "جودة منخفضة ❌"
 
@@ -777,9 +717,7 @@ def get_risk_new(quality):
     daily_dd  = ACCOUNT["daily_drawdown"]
     daily_used= ACCOUNT["daily_used"]
     dd_pct    = dd_used / max_dd * 100 if max_dd > 0 else 0
-    daily_pct = daily_used / daily_dd * 100 if daily_dd > 0 else 0
 
-    # إيقاف كامل
     if dd_pct >= 90:
         return 0, f"🚨 وصلت {dd_used:.1f}% من أصل {max_dd}% — الحساب في خطر!"
     if DAILY_RISK["loss_today"]:
@@ -787,12 +725,10 @@ def get_risk_new(quality):
     if DAILY_RISK["trades_entered_today"] >= 2:
         return 0, "🛑 دخلتِ صفقتين اليوم — حد اليوم وصل"
 
-    # مخاطرة أساسية
     if quality >= 90:   base_risk = 1.0
     elif quality >= 80: base_risk = 0.75
     else:               base_risk = 0.5
 
-    # تخفيض لو الدروداون الكلي وصل 80%
     if dd_pct >= 80:
         base_risk = 0.5
         label_extra = f"\n⚠️ دروداون كلي {dd_used:.1f}% — مخاطرة مخففة"
@@ -804,8 +740,6 @@ def get_risk_new(quality):
 
 
 def is_trading_allowed():
-    """هل يُسمح بإرسال سيتابات الآن؟"""
-    # إيقاف أسبوعي
     if DAILY_RISK.get("stopped_until_date"):
         today_str = datetime.now(RIYADH_TZ).strftime("%Y-%m-%d")
         if today_str < DAILY_RISK["stopped_until_date"]:
@@ -831,7 +765,6 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
         if debug: return f"{sym_name} {tf}: ❌ بيانات فاضية"
         return None
 
-    # أخبار CPI/NFP/FOMC = وقف كامل
     if news.get("hard_block"):
         if debug: return f"{sym_name} {tf}: ❌ أخبار CPI/NFP/FOMC"
         return None
@@ -841,7 +774,6 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
         if debug: return f"{sym_name} {tf}: ❌ ترند محايد"
         return None
 
-    # H4 Order Flow — لازم يدعم ولا يكون عكس
     df_h4   = get_candles(yf_sym, "4h", 50)
     h4_trend = detect_trend_structure(df_h4) if not df_h4.empty else "neutral"
     h4_of    = detect_order_flow(df_h4, trend) if not df_h4.empty else 0.0
@@ -853,7 +785,6 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
         if debug: return f"{sym_name} {tf}: ❌ H4 order flow ضعيف ({h4_of})"
         return None
 
-    # Daily Order Flow
     df_d     = get_candles(yf_sym, "1d", 30)
     daily_trend = detect_trend_structure(df_d) if not df_d.empty else "neutral"
     daily_of    = detect_order_flow(df_d, trend) if not df_d.empty else 0.0
@@ -862,28 +793,23 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
         if debug: return f"{sym_name} {tf}: ❌ Daily عكس الاتجاه"
         return None
 
-    # Liquidity Sweep قبل DBOS
     liq_sweep, liq_level = detect_liquidity_sweep(df, trend)
 
-    # DBOS
     dbos = detect_dbos(df, trend)
     if not dbos:
         if debug: return f"{sym_name} {tf}: ❌ ما في DBOS"
         return None
 
-    # IDM
     idm = find_idm(df, dbos["index"], trend)
     if not idm:
         if debug: return f"{sym_name} {tf}: ❌ ما في IDM"
         return None
 
-    # OB
     ob = find_ob(df, idm["index"], trend)
     if not ob:
         if debug: return f"{sym_name} {tf}: ❌ ما في OB"
         return None
 
-    # حجم OB مناسب
     ob_size = ob["top"] - ob["bottom"]
     min_ob = {"BTC": 300.0, "XAU": 3.0, "XAG": 0.05}.get(
         next((k for k in ["BTC","XAU","XAG"] if k in sym_name), ""), 0.0020)
@@ -894,7 +820,6 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
     current = df["close"].iloc[-1]
     ob_range = ob["top"] - ob["bottom"]
 
-    # السعر قريب من OB
     if trend == "bullish":
         if current < ob["bottom"] - ob_range * 1.5:
             if debug: return f"{sym_name} {tf}: ❌ السعر بعيد تحت OB"
@@ -912,7 +837,6 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
 
     in_ob = ob["bottom"] <= current <= ob["top"]
 
-    # OB عمر
     ob_age  = len(df) - ob["index"]
     idm_age = len(df) - idm["index"]
     if ob_age > 60:
@@ -922,10 +846,8 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
         if debug: return f"{sym_name} {tf}: ❌ IDM قديم ({idm_age} شمعة)"
         return None
 
-    # BSL/SSL
     has_bsl, bsl_level = check_bsl_ssl(df, trend)
 
-    # PDH/PDL
     pdh, pdl = get_pdh_pdl(yf_sym)
     has_pdh_pdl = False
     if pdh and pdl:
@@ -934,7 +856,6 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
         elif trend == "bearish" and pdl < current:
             has_pdh_pdl = True
 
-    # LWH/LWL
     lwh, lwl = get_lwh_lwl(yf_sym)
     has_lwh_lwl = False
     if lwh and lwl:
@@ -943,12 +864,10 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
         elif trend == "bearish" and lwl < current:
             has_lwh_lwl = True
 
-    # Weekly
     df_w = get_candles(yf_sym, "1wk", 20)
     weekly_trend = detect_trend_structure(df_w) if not df_w.empty else "neutral"
     weekly_match = weekly_trend == trend
 
-    # الجودة
     quality = calc_quality_new(
         liq_sweep  = liq_sweep,
         h4_of      = h4_of,
@@ -965,7 +884,6 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
         if debug: return f"{sym_name} {tf}: ❌ جودة {quality}% (أقل من 70)"
         return None
 
-    # Entry / SL / TP
     sl = calc_sl_from_ob(ob, trend)
     if trend == "bullish":
         entry = round(ob["top"], 5)
@@ -1056,19 +974,19 @@ def setup_msg(a):
 def update_weights_win(analysis):
     weights = load_weights()
     boost = 0.20
-    if analysis.get("liq_sweep"):    weights["liq_sweep"] = min(3.0, weights["liq_sweep"] + boost)
-    if analysis.get("h4_of",0)>=0.7: weights["h4_of"]    = min(3.0, weights["h4_of"]    + boost)
-    if analysis.get("daily_of",0)>=0.6: weights["daily_of"] = min(3.0, weights["daily_of"] + boost)
-    if analysis.get("has_bsl"):      weights["bsl_ssl"]   = min(3.0, weights["bsl_ssl"]  + boost)
-    if analysis.get("has_pdh_pdl"):  weights["pdh_pdl"]   = min(3.0, weights["pdh_pdl"]  + boost)
-    if analysis.get("has_lwh_lwl"):  weights["lwh_lwl"]   = min(3.0, weights["lwh_lwl"]  + boost)
+    if analysis.get("liq_sweep"):       weights["liq_sweep"] = min(3.0, weights["liq_sweep"] + boost)
+    if analysis.get("h4_of",0)>=0.7:   weights["h4_of"]     = min(3.0, weights["h4_of"]    + boost)
+    if analysis.get("daily_of",0)>=0.6: weights["daily_of"]  = min(3.0, weights["daily_of"] + boost)
+    if analysis.get("has_bsl"):         weights["bsl_ssl"]   = min(3.0, weights["bsl_ssl"]  + boost)
+    if analysis.get("has_pdh_pdl"):     weights["pdh_pdl"]   = min(3.0, weights["pdh_pdl"]  + boost)
+    if analysis.get("has_lwh_lwl"):     weights["lwh_lwl"]   = min(3.0, weights["lwh_lwl"]  + boost)
     save_weights(weights)
 
 def update_weights_loss(analysis):
     weights = load_weights()
     penalty = 0.10
-    if analysis.get("liq_sweep"):    weights["liq_sweep"] = max(0.1, weights["liq_sweep"] - penalty)
-    if analysis.get("has_bsl"):      weights["bsl_ssl"]   = max(0.1, weights["bsl_ssl"]  - penalty)
+    if analysis.get("liq_sweep"): weights["liq_sweep"] = max(0.1, weights["liq_sweep"] - penalty)
+    if analysis.get("has_bsl"):   weights["bsl_ssl"]   = max(0.1, weights["bsl_ssl"]  - penalty)
     save_weights(weights)
 
 
@@ -1176,7 +1094,7 @@ async def handle_callback(update, context):
                 update_weights_win(t.get("analysis", {}))
                 journal_set_result(trade_id, 4.0)
                 msg = f"🚀 هدف 2 وصل! +4R على {t['symbol']} 🔥"
-            else:  # sl
+            else:
                 t["result_r"] = -1.0
                 t["status"]   = "closed"
                 DAILY_RISK["loss_today"] = True
@@ -1239,7 +1157,6 @@ async def scan_markets(bot):
     for name, yf_sym in SYMBOLS.items():
         for tf in ["4h", "1h"]:
             key = f"{name}_{tf}"
-            # لا يرسل نفس الصفقة مرتين في اليوم
             last_sent_date = SENT_SETUPS.get(key)
             if last_sent_date == today_str:
                 continue
@@ -1261,115 +1178,12 @@ async def scan_markets(bot):
     return False, ""
 
 
-# ============================================================
-# ===== رسائل الحساب =====
-# ============================================================
-
-def daily_advice_msg():
-    dd            = ACCOUNT["drawdown_used"]
-    max_dd        = ACCOUNT["max_drawdown"]
-    remaining_max = max_dd - dd
-    daily_dd      = ACCOUNT["daily_drawdown"]
-    daily_used    = ACCOUNT["daily_used"]
-    remaining_daily = daily_dd - daily_used
-    pnl    = ACCOUNT["pnl_percent"]
-    trades = ACCOUNT["trades_week"]
-    phase_label = {"challenge": "Challenge 🔴", "verification": "Verification 🟡", "funded": "Funded 🟢"}.get(ACCOUNT["phase"], "")
-
-    pnl_txt = (f"رابح {pnl}%، واصلي 🌟" if pnl > 3
-               else f"رابح {pnl}%، شغل كويس 👍" if pnl > 0
-               else "عند نقطة البداية 🎯" if pnl == 0
-               else f"خسارة {abs(pnl)}%، حمي الحساب ❗")
-
-    dd_pct = dd / max_dd * 100 if max_dd > 0 else 0
-    dd_txt = (f"باقي {remaining_max:.1f}% الحمدلله ✅" if dd_pct < 50
-              else f"باقي {remaining_max:.1f}% — تعاملي بحذر 🟡" if dd_pct < 80
-              else f"باقي {remaining_max:.1f}% فقط! 🔴")
-
-    msg  = f"صباح الخير ☀️\n─────────────────\n"
-    msg += f"🏢 {ACCOUNT['firm_name']} | {phase_label}\n"
-    msg += f"💰 ${ACCOUNT['current_balance']:,.0f}\n"
-    msg += f"─────────────────\n"
-    msg += f"الحساب: {pnl_txt}\n"
-    msg += f"دروداون كلي: {dd_txt}\n"
-    msg += f"دروداون يومي: باقي {remaining_daily:.1f}%\n"
-    msg += f"صفقات الأسبوع: {trades}\n"
-    msg += f"─────────────────\n"
-    msg += f"{random.choice(DAILY_TIPS)}\n"
-    msg += "وفقك الله 🤍"
-    return msg
-
-
-def status_msg():
-    now           = datetime.now(RIYADH_TZ)
-    remaining_max = ACCOUNT["max_drawdown"]   - ACCOUNT["drawdown_used"]
-    remaining_daily = ACCOUNT["daily_drawdown"] - ACCOUNT["daily_used"]
-    pnl  = ACCOUNT["pnl_percent"]
-    icon = "🟢" if pnl >= 0 and remaining_max > 5 else "🟡" if remaining_max > 2 else "🔴"
-    phase_label = {"challenge": "Challenge", "verification": "Verification", "funded": "Funded"}.get(ACCOUNT["phase"], "")
-    msg  = f"{icon} حالة الحساب | {now.strftime('%H:%M')} الرياض\n"
-    msg += f"─────────────────\n"
-    msg += f"🏢 {ACCOUNT['firm_name']} | {phase_label}\n"
-    msg += f"💰 ${ACCOUNT['current_balance']:,.0f}\n"
-    msg += f"📊 PnL: {'+' if pnl>=0 else ''}{pnl}%\n"
-    msg += f"📉 دروداون كلي: {ACCOUNT['drawdown_used']}% (باقي {remaining_max:.1f}%)\n"
-    msg += f"📅 دروداون يومي: {ACCOUNT['daily_used']}% (باقي {remaining_daily:.1f}%)\n"
-    msg += f"🔢 صفقات اليوم: {ACCOUNT['trades_today']} | الأسبوع: {ACCOUNT['trades_week']}"
-    return msg
-
-
-def challenge_progress_msg():
-    phase  = ACCOUNT["phase"]
-    pnl    = ACCOUNT["pnl_percent"]
-    target = PHASE_TARGETS.get(phase, {}).get("target", 0)
-    remaining_max = ACCOUNT["max_drawdown"] - ACCOUNT["drawdown_used"]
-    phase_label   = {"challenge": "Challenge", "verification": "Verification", "funded": "Funded"}.get(phase, "")
-    if target:
-        progress  = max(0, min(100, round(pnl / target * 100)))
-        bar       = "█" * (progress//20) + "░" * (5-progress//20)
-        target_txt= f"الهدف: {target}% | وصلت: {pnl}%\n{bar} {progress}%"
-    else:
-        target_txt= f"حساب ممول | ربح: {pnl}%"
-    msg  = f"📊 {phase_label} Progress\n─────────────────\n"
-    msg += f"{target_txt}\n"
-    msg += f"دروداون باقي: {remaining_max:.1f}%\n"
-    if target and pnl >= target:
-        msg += "✅ حققتِ الهدف! انتقلي للمرحلة التالية 🎉"
-    elif remaining_max < 3:
-        msg += "⚠️ دروداون ضيق، تعاملي بحذر"
-    else:
-        msg += "واصلي 💪"
-    return msg
-
-
-def weekly_report_msg():
-    closed   = [t for t in JOURNAL.values() if t["status"] == "closed"]
-    skipped  = [t for t in JOURNAL.values() if t["status"] == "skipped"]
-    active   = [t for t in JOURNAL.values() if t["status"] == "active"]
-    if not closed and not active:
-        return "ما في صفقات مسجلة هالأسبوع 📋\nبداية الأسبوع الجاي إن شاء الله 💪"
-    wins     = [t for t in closed if (t.get("result_r") or 0) > 0]
-    losses   = [t for t in closed if (t.get("result_r") or 0) < 0]
-    win_rate = round(len(wins)/len(closed)*100) if closed else 0
-    total_r  = round(sum(t["result_r"] for t in closed if t.get("result_r")), 1)
-    msg  = "📊 تقرير الأسبوع\n─────────────────\n"
-    msg += f"إجمالي: {len(closed)} | ✅ {len(wins)} | 🔴 {len(losses)}\n"
-    msg += f"📈 نسبة الفوز: {win_rate}%\n"
-    msg += f"💰 مجموع R: {'+' if total_r>=0 else ''}{total_r}R\n"
-    if skipped: msg += f"⏭ تجاهلت: {len(skipped)}\n"
-    if active:  msg += f"⏳ مفتوحة: {len(active)}\n"
-    msg += "─────────────────\n"
-    for t in closed:
-        icon  = "✅" if (t.get("result_r") or 0) > 0 else "🔴"
-        r_txt = f"+{t['result_r']}R" if (t.get("result_r") or 0) > 0 else f"{t['result_r']}R"
-        msg += f"{icon} {t['symbol']} {t['tf']} → {r_txt}\n"
-    msg += "─────────────────\n"
-    if total_r >= 4:   msg += "أسبوع ممتاز 🌟"
-    elif total_r >= 0: msg += "أسبوع كويس 💪"
-    else:              msg += "أسبوع صعب، راجعي الجورنال 🧠"
-    stats_add_week(JOURNAL)
-    JOURNAL.clear()
-    return msg
+async def _background_scan(bot):
+    """سكان صامت في الخلفية — يبعث الإشارات تلقائياً"""
+    try:
+        await scan_markets(bot)
+    except Exception as e:
+        logger.error(f"خطأ سكان خلفية: {e}")
 
 
 # ============================================================
@@ -1383,13 +1197,18 @@ async def start_cmd(update, context):
             "اكتبي /setup لنبدأ"
         )
     else:
-        phase_label = {"challenge": "Challenge 🔴", "verification": "Verification 🟡", "funded": "Funded 🟢"}.get(ACCOUNT["phase"], "")
+        phase_label = {
+            "challenge": "Challenge 🔴",
+            "verification": "Verification 🟡",
+            "funded": "Funded 🟢"
+        }.get(ACCOUNT["phase"], "")
         await update.message.reply_text(
             f"أهلاً! 🌟\n"
             f"─────────────────\n"
             f"🏢 {ACCOUNT['firm_name']} | {phase_label}\n"
             f"💰 ${ACCOUNT['current_balance']:,.0f}\n"
             f"─────────────────\n"
+            f"/scan فحص فوري\n"
             f"/advice نصايح اليوم\n"
             f"/status حالة الحساب\n"
             f"/progress تقدم الـ Challenge\n"
@@ -1397,6 +1216,24 @@ async def start_cmd(update, context):
             f"/journal تقرير الجورنال\n"
             f"/debug تشخيص السوق\n"
         )
+
+async def scan_cmd(update, context):
+    """/scan — يرد فوراً ثم يفحص في الخلفية"""
+    msg = await update.message.reply_text(random.choice(WAITING_MSGS))
+    asyncio.create_task(_do_scan_reply(context.bot, msg))
+
+async def _do_scan_reply(bot, original_msg):
+    """ينفذ الفحص ويحدّث الرسالة بالنتيجة"""
+    try:
+        found, reason = await scan_markets(bot)
+        if found:
+            await original_msg.edit_text("✅ الفحص انتهى — شوفي الإشارات فوق 👆")
+        elif reason:
+            await original_msg.edit_text(f"🛑 الفحص انتهى\n{reason}")
+        else:
+            await original_msg.edit_text(random.choice(NO_SETUP_MSGS))
+    except Exception as e:
+        await original_msg.edit_text(f"⚠️ خطأ في الفحص: {str(e)[:60]}")
 
 async def advice_cmd(update, context):
     await update.message.reply_text(daily_advice_msg())
@@ -1429,31 +1266,161 @@ async def debug_cmd(update, context):
 
 
 # ============================================================
+# ===== رسائل الحساب =====
+# ============================================================
+
+def daily_advice_msg():
+    dd              = ACCOUNT["drawdown_used"]
+    max_dd          = ACCOUNT["max_drawdown"]
+    remaining_max   = max_dd - dd
+    daily_dd        = ACCOUNT["daily_drawdown"]
+    daily_used      = ACCOUNT["daily_used"]
+    remaining_daily = daily_dd - daily_used
+    pnl    = ACCOUNT["pnl_percent"]
+    trades = ACCOUNT["trades_week"]
+    phase_label = {
+        "challenge": "Challenge 🔴",
+        "verification": "Verification 🟡",
+        "funded": "Funded 🟢"
+    }.get(ACCOUNT["phase"], "")
+
+    pnl_txt = (f"رابح {pnl}%، واصلي 🌟" if pnl > 3
+               else f"رابح {pnl}%، شغل كويس 👍" if pnl > 0
+               else "عند نقطة البداية 🎯" if pnl == 0
+               else f"خسارة {abs(pnl)}%، حمي الحساب ❗")
+
+    dd_pct = dd / max_dd * 100 if max_dd > 0 else 0
+    dd_txt = (f"باقي {remaining_max:.1f}% الحمدلله ✅" if dd_pct < 50
+              else f"باقي {remaining_max:.1f}% — تعاملي بحذر 🟡" if dd_pct < 80
+              else f"باقي {remaining_max:.1f}% فقط! 🔴")
+
+    msg  = f"صباح الخير ☀️\n─────────────────\n"
+    msg += f"🏢 {ACCOUNT['firm_name']} | {phase_label}\n"
+    msg += f"💰 ${ACCOUNT['current_balance']:,.0f}\n"
+    msg += f"─────────────────\n"
+    msg += f"الحساب: {pnl_txt}\n"
+    msg += f"دروداون كلي: {dd_txt}\n"
+    msg += f"دروداون يومي: باقي {remaining_daily:.1f}%\n"
+    msg += f"صفقات الأسبوع: {trades}\n"
+    msg += f"─────────────────\n"
+    msg += f"{random.choice(DAILY_TIPS)}\n"
+    msg += "وفقك الله 🤍"
+    return msg
+
+
+def status_msg():
+    now             = datetime.now(RIYADH_TZ)
+    remaining_max   = ACCOUNT["max_drawdown"]   - ACCOUNT["drawdown_used"]
+    remaining_daily = ACCOUNT["daily_drawdown"] - ACCOUNT["daily_used"]
+    pnl  = ACCOUNT["pnl_percent"]
+    icon = "🟢" if pnl >= 0 and remaining_max > 5 else "🟡" if remaining_max > 2 else "🔴"
+    phase_label = {
+        "challenge": "Challenge",
+        "verification": "Verification",
+        "funded": "Funded"
+    }.get(ACCOUNT["phase"], "")
+    msg  = f"{icon} حالة الحساب | {now.strftime('%H:%M')} الرياض\n"
+    msg += f"─────────────────\n"
+    msg += f"🏢 {ACCOUNT['firm_name']} | {phase_label}\n"
+    msg += f"💰 ${ACCOUNT['current_balance']:,.0f}\n"
+    msg += f"📊 PnL: {'+' if pnl>=0 else ''}{pnl}%\n"
+    msg += f"📉 دروداون كلي: {ACCOUNT['drawdown_used']}% (باقي {remaining_max:.1f}%)\n"
+    msg += f"📅 دروداون يومي: {ACCOUNT['daily_used']}% (باقي {remaining_daily:.1f}%)\n"
+    msg += f"🔢 صفقات اليوم: {ACCOUNT['trades_today']} | الأسبوع: {ACCOUNT['trades_week']}"
+    return msg
+
+
+def challenge_progress_msg():
+    phase  = ACCOUNT["phase"]
+    pnl    = ACCOUNT["pnl_percent"]
+    target = PHASE_TARGETS.get(phase, {}).get("target", 0)
+    remaining_max = ACCOUNT["max_drawdown"] - ACCOUNT["drawdown_used"]
+    phase_label = {
+        "challenge": "Challenge",
+        "verification": "Verification",
+        "funded": "Funded"
+    }.get(phase, "")
+    if target:
+        progress  = max(0, min(100, round(pnl / target * 100)))
+        bar       = "█" * (progress//20) + "░" * (5-progress//20)
+        target_txt= f"الهدف: {target}% | وصلت: {pnl}%\n{bar} {progress}%"
+    else:
+        target_txt= f"حساب ممول | ربح: {pnl}%"
+    msg  = f"📊 {phase_label} Progress\n─────────────────\n"
+    msg += f"{target_txt}\n"
+    msg += f"دروداون باقي: {remaining_max:.1f}%\n"
+    if target and pnl >= target:
+        msg += "✅ حققتِ الهدف! انتقلي للمرحلة التالية 🎉"
+    elif remaining_max < 3:
+        msg += "⚠️ دروداون ضيق، تعاملي بحذر"
+    else:
+        msg += "واصلي 💪"
+    return msg
+
+
+def weekly_report_msg():
+    closed  = [t for t in JOURNAL.values() if t["status"] == "closed"]
+    skipped = [t for t in JOURNAL.values() if t["status"] == "skipped"]
+    active  = [t for t in JOURNAL.values() if t["status"] == "active"]
+    if not closed and not active:
+        return "ما في صفقات مسجلة هالأسبوع 📋\nبداية الأسبوع الجاي إن شاء الله 💪"
+    wins     = [t for t in closed if (t.get("result_r") or 0) > 0]
+    losses   = [t for t in closed if (t.get("result_r") or 0) < 0]
+    win_rate = round(len(wins)/len(closed)*100) if closed else 0
+    total_r  = round(sum(t["result_r"] for t in closed if t.get("result_r")), 1)
+    msg  = "📊 تقرير الأسبوع\n─────────────────\n"
+    msg += f"إجمالي: {len(closed)} | ✅ {len(wins)} | 🔴 {len(losses)}\n"
+    msg += f"📈 نسبة الفوز: {win_rate}%\n"
+    msg += f"💰 مجموع R: {'+' if total_r>=0 else ''}{total_r}R\n"
+    if skipped: msg += f"⏭ تجاهلت: {len(skipped)}\n"
+    if active:  msg += f"⏳ مفتوحة: {len(active)}\n"
+    msg += "─────────────────\n"
+    for t in closed:
+        icon  = "✅" if (t.get("result_r") or 0) > 0 else "🔴"
+        r_txt = f"+{t['result_r']}R" if (t.get("result_r") or 0) > 0 else f"{t['result_r']}R"
+        msg += f"{icon} {t['symbol']} {t['tf']} → {r_txt}\n"
+    msg += "─────────────────\n"
+    if total_r >= 4:   msg += "أسبوع ممتاز 🌟"
+    elif total_r >= 0: msg += "أسبوع كويس 💪"
+    else:              msg += "أسبوع صعب، راجعي الجورنال 🧠"
+    stats_add_week(JOURNAL)
+    JOURNAL.clear()
+    return msg
+
+
+# ============================================================
 # ===== الحلقة الرئيسية =====
 # ============================================================
 
 async def trading_loop(bot):
     load_data()
 
-    # لو ما في بيانات حساب — ما يرسل رسالة البداية القديمة
+    # ===== رسالة البداية =====
     if ACCOUNT.get("setup_done") and ACCOUNT.get("firm_name"):
-        phase_label = {"challenge": "Challenge 🔴", "verification": "Verification 🟡", "funded": "Funded 🟢"}.get(ACCOUNT["phase"], "")
+        phase_label = {
+            "challenge": "Challenge 🔴",
+            "verification": "Verification 🟡",
+            "funded": "Funded 🟢"
+        }.get(ACCOUNT["phase"], "")
         await bot.send_message(
             chat_id=CHAT_ID,
             text=(
-                f"✅ البوت اشتغل\n"
+                f"✅ بوتك اشتغل يا شذا ✅\n"
                 f"─────────────────\n"
-                f"🏢 {ACCOUNT['firm_name']} | {phase_label}\n"
+                f"{ACCOUNT['firm_name']} | {phase_label}\n"
                 f"💰 ${ACCOUNT['current_balance']:,.0f} | "
                 f"دروداون: {ACCOUNT['max_drawdown']}% / {ACCOUNT['daily_drawdown']}% يومي\n"
                 f"─────────────────\n"
-                f"البوت يراقب السوق تلقائياً 24/7 👀\n"
-                f"/advice  /status  /update  /journal"
+                f"/scan فحص فوري\n"
+                f"/advice نصايح اليوم\n"
+                f"/status حالة الحساب\n"
+                f"/update تحديث الحساب"
             )
         )
 
-    last_advice_day = None
-    last_warn_hour  = -1
+    last_advice_day  = None
+    last_warn_hour   = -1
+    last_scan_slot   = -1   # نتبع آخر فترة سكان تلقائي (كل 30 دقيقة)
 
     while True:
         try:
@@ -1461,18 +1428,22 @@ async def trading_loop(bot):
             today     = now.date()
             today_str = today.strftime("%Y-%m-%d")
 
-            # ===== صباح جديد =====
+            # ===== صباح جديد (8:00) =====
             if now.hour == 8 and now.minute < 5 and last_advice_day != today:
+                # تصفير اليومي
                 ACCOUNT["daily_used"]    = 0.0
                 ACCOUNT["trades_today"]  = 0
                 DAILY_RISK["loss_today"] = False
                 DAILY_RISK["trades_entered_today"] = 0
                 save_data()
+
+                # رسالة الصباح + تقدم الـ Challenge
                 await bot.send_message(chat_id=CHAT_ID, text=daily_advice_msg())
+                await asyncio.sleep(1)
                 await bot.send_message(chat_id=CHAT_ID, text=challenge_progress_msg())
                 last_advice_day = today
 
-            # ===== تقرير الأسبوع — الجمعة من 8 مساءً =====
+            # ===== تقرير الأسبوع — الجمعة 8 مساءً =====
             if now.weekday() == 4 and now.hour >= 20:
                 if not hasattr(trading_loop, 'last_report') or trading_loop.last_report != today:
                     await bot.send_message(chat_id=CHAT_ID, text=weekly_report_msg())
@@ -1489,13 +1460,18 @@ async def trading_loop(bot):
                     )
                     last_warn_hour = now.hour
 
-            # ===== سكان السوق =====
-            found, reason = await scan_markets(bot)
+            # ===== سكان تلقائي كل 30 دقيقة في الخلفية =====
+            # الدقيقة 0 و 30 من كل ساعة
+            current_slot = now.hour * 2 + (1 if now.minute >= 30 else 0)
+            if current_slot != last_scan_slot:
+                last_scan_slot = current_slot
+                asyncio.create_task(_background_scan(bot))
 
-            # ===== مراقبة الصفقات =====
+            # ===== مراقبة الصفقات المفتوحة =====
             await monitor_trades(bot)
 
-            await asyncio.sleep(1800)
+            # نفحص كل دقيقة عشان ما نفوت الأحداث
+            await asyncio.sleep(60)
 
         except Exception as e:
             logger.error(f"خطأ في الحلقة: {e}")
@@ -1515,11 +1491,11 @@ async def main():
     setup_conv = ConversationHandler(
         entry_points=[CommandHandler("setup", setup_start)],
         states={
-            S_FIRM:       [MessageHandler(filters.TEXT & ~filters.COMMAND, got_firm)],
-            S_PHASE:      [MessageHandler(filters.TEXT & ~filters.COMMAND, got_phase)],
-            S_BALANCE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, got_balance_setup)],
-            S_MAX_DD:     [MessageHandler(filters.TEXT & ~filters.COMMAND, got_max_dd)],
-            S_DAILY_DD:   [MessageHandler(filters.TEXT & ~filters.COMMAND, got_daily_dd)],
+            S_FIRM:     [MessageHandler(filters.TEXT & ~filters.COMMAND, got_firm)],
+            S_PHASE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, got_phase)],
+            S_BALANCE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, got_balance_setup)],
+            S_MAX_DD:   [MessageHandler(filters.TEXT & ~filters.COMMAND, got_max_dd)],
+            S_DAILY_DD: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_daily_dd)],
         },
         fallbacks=[CommandHandler("cancel", cancel_conv)],
     )
@@ -1538,7 +1514,9 @@ async def main():
         fallbacks=[CommandHandler("cancel", cancel_conv)],
     )
 
+    # ===== تسجيل الأوامر =====
     app.add_handler(CommandHandler("start",    start_cmd))
+    app.add_handler(CommandHandler("scan",     scan_cmd))      # ← جديد
     app.add_handler(CommandHandler("advice",   advice_cmd))
     app.add_handler(CommandHandler("status",   status_cmd))
     app.add_handler(CommandHandler("progress", progress_cmd))
