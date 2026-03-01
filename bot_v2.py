@@ -929,6 +929,411 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
 # ===== رسالة السيتاب =====
 # ============================================================
 
+# ============================================================
+# ===== استراتيجية Morning Star =====
+# ============================================================
+
+def detect_morning_star(df, direction, lookback=30):
+    """
+    Morning Star Pattern:
+    الترتيب: سحب سيولة أولاً ← ثم النمط الثلاثي
+    c1 = شمعة هابطة كبيرة (جسم > 50%)
+    c2 = شمعة صغيرة جداً (تردد، جسم < 35% من c1)
+    c3 = شمعة صاعدة كبيرة (تغلق فوق منتصف c1)
+    يجب وجود سحب سيولة في آخر 10 شمعات قبل c1
+    """
+    if len(df) < lookback + 6:
+        return None
+
+    search = df.tail(lookback + 6)
+
+    for i in range(len(search) - 4, len(search) - 1):
+        c1 = search.iloc[i - 2]
+        c2 = search.iloc[i - 1]
+        c3 = search.iloc[i]
+
+        c1_range = c1["high"] - c1["low"]
+        c3_range = c3["high"] - c3["low"]
+        if c1_range == 0 or c3_range == 0:
+            continue
+
+        c1_body = abs(c1["close"] - c1["open"])
+        c2_body = abs(c2["close"] - c2["open"])
+        c3_body = abs(c3["close"] - c3["open"])
+
+        c1_body_ratio = c1_body / c1_range
+        c3_body_ratio = c3_body / c3_range
+
+        if direction == "bullish":
+            # ===== c1: هابطة كبيرة =====
+            if not (c1["close"] < c1["open"] and c1_body_ratio > 0.50):
+                continue
+
+            # ===== c2: صغيرة جداً =====
+            if c1_body > 0 and c2_body / c1_body > 0.35:
+                continue
+            if c2["low"] < c1["low"] * 0.999:
+                continue
+
+            # ===== c3: صاعدة كبيرة فوق منتصف c1 =====
+            c1_mid = (c1["open"] + c1["close"]) / 2
+            if not (c3["close"] > c3["open"] and
+                    c3["close"] > c1_mid and
+                    c3_body_ratio > 0.45):
+                continue
+
+            # ===== سحب سيولة قبل c1 (في آخر 10 شمعات قبلها) =====
+            pre_c1 = search.iloc[max(0, i-12):i-2]
+            if len(pre_c1) < 3:
+                continue
+            ref_low  = pre_c1["low"].min()
+            has_sweep = False
+            for j in range(len(pre_c1)):
+                pc = pre_c1.iloc[j]
+                if pc["low"] < ref_low and pc["close"] > ref_low:
+                    has_sweep = True
+                    break
+            if not has_sweep:
+                continue
+
+            # السعر الحالي فوق c3
+            current = df["close"].iloc[-1]
+            if current < c3["close"] * 0.997:
+                continue
+
+            ob_bottom = c1["low"]
+            ob_top    = c1["open"]
+            sl        = round(c1["low"] - (c1_range * 0.10), 5)
+            entry     = round(c3["close"], 5)
+            liq_pool  = round(ref_low, 5)
+
+            return {
+                "direction":  "bullish",
+                "entry":      entry,
+                "sl":         sl,
+                "ob_top":     round(ob_top, 5),
+                "ob_bottom":  round(ob_bottom, 5),
+                "liq_pool":   liq_pool,
+                "current":    round(current, 5),
+            }
+
+        else:  # bearish
+            # ===== c1: صاعدة كبيرة =====
+            if not (c1["close"] > c1["open"] and c1_body_ratio > 0.50):
+                continue
+
+            # ===== c2: صغيرة جداً =====
+            if c1_body > 0 and c2_body / c1_body > 0.35:
+                continue
+            if c2["high"] > c1["high"] * 1.001:
+                continue
+
+            # ===== c3: هابطة كبيرة تحت منتصف c1 =====
+            c1_mid = (c1["open"] + c1["close"]) / 2
+            if not (c3["close"] < c3["open"] and
+                    c3["close"] < c1_mid and
+                    c3_body_ratio > 0.45):
+                continue
+
+            # ===== سحب سيولة علوي قبل c1 =====
+            pre_c1 = search.iloc[max(0, i-12):i-2]
+            if len(pre_c1) < 3:
+                continue
+            ref_high  = pre_c1["high"].max()
+            has_sweep = False
+            for j in range(len(pre_c1)):
+                pc = pre_c1.iloc[j]
+                if pc["high"] > ref_high and pc["close"] < ref_high:
+                    has_sweep = True
+                    break
+            if not has_sweep:
+                continue
+
+            current = df["close"].iloc[-1]
+            if current > c3["close"] * 1.003:
+                continue
+
+            ob_top    = c1["high"]
+            ob_bottom = c1["open"]
+            sl        = round(c1["high"] + (c1_range * 0.10), 5)
+            entry     = round(c3["close"], 5)
+            liq_pool  = round(ref_high, 5)
+
+            return {
+                "direction":  "bearish",
+                "entry":      entry,
+                "sl":         sl,
+                "ob_top":     round(ob_top, 5),
+                "ob_bottom":  round(ob_bottom, 5),
+                "liq_pool":   liq_pool,
+                "current":    round(current, 5),
+            }
+    return None
+    if len(df) < lookback + 6:
+        return None
+
+    search = df.tail(lookback + 6)
+
+    for i in range(len(search) - 4, len(search) - 1):
+        c1 = search.iloc[i - 2]
+        c2 = search.iloc[i - 1]
+        c3 = search.iloc[i]
+
+        c1_range = c1["high"] - c1["low"]
+        c2_range = c2["high"] - c2["low"]
+        c3_range = c3["high"] - c3["low"]
+        if c1_range == 0 or c3_range == 0:
+            continue
+
+        c1_body = abs(c1["close"] - c1["open"])
+        c2_body = abs(c2["close"] - c2["open"])
+        c3_body = abs(c3["close"] - c3["open"])
+
+        c1_body_ratio = c1_body / c1_range
+        c3_body_ratio = c3_body / c3_range
+
+        if direction == "bullish":
+            # ===== c1: شمعة السحب =====
+            # ذيل سفلي يخترق قاع سابق ويغلق فوقه (Liquidity Sweep)
+            prev_low = search["low"].iloc[max(0, i-12):i-2].min()
+            if c1["low"] >= prev_low:
+                continue  # لازم يخترق القاع السابق
+
+            # يغلق فوق القاع السابق (رجع للداخل)
+            if c1["close"] <= prev_low:
+                continue
+
+            # ذيل سفلي واضح
+            lower_wick = min(c1["open"], c1["close"]) - c1["low"]
+            wick_ratio = lower_wick / c1_range
+            if wick_ratio < 0.30:
+                continue  # لازم ذيل واضح
+
+            # ===== c2: شمعة تردد صغيرة =====
+            if c1_body > 0 and c2_body / c1_body > 0.35:
+                continue
+            # c2 ما تنزل تحت c1
+            if c2["low"] < c1["low"]:
+                continue
+
+            # ===== c3: شمعة عكسية قوية =====
+            c1_mid = (c1["open"] + c1["close"]) / 2
+            if not (c3["close"] > c3["open"] and
+                    c3["close"] > c1_mid and
+                    c3_body_ratio > 0.45):
+                continue
+
+            # السعر الحالي قريب من c3
+            current = df["close"].iloc[-1]
+            if current < c3["close"] * 0.997:
+                continue
+
+            ob_bottom = c1["low"]
+            ob_top    = max(c1["open"], c1["close"], c2["high"])
+            sl        = round(c1["low"] - (c1_range * 0.10), 5)
+            entry     = round(c3["close"], 5)
+
+            return {
+                "direction": "bullish",
+                "entry":     entry,
+                "sl":        sl,
+                "ob_top":    round(ob_top, 5),
+                "ob_bottom": round(ob_bottom, 5),
+                "liq_pool":  round(prev_low, 5),
+                "wick_ratio": round(wick_ratio, 2),
+                "current":   round(current, 5),
+            }
+
+        else:  # bearish
+            # ===== c1: شمعة السحب العلوي =====
+            prev_high = search["high"].iloc[max(0, i-12):i-2].max()
+            if c1["high"] <= prev_high:
+                continue
+
+            if c1["close"] >= prev_high:
+                continue
+
+            upper_wick = c1["high"] - max(c1["open"], c1["close"])
+            wick_ratio = upper_wick / c1_range
+            if wick_ratio < 0.30:
+                continue
+
+            # ===== c2: شمعة تردد صغيرة =====
+            if c1_body > 0 and c2_body / c1_body > 0.35:
+                continue
+            if c2["high"] > c1["high"]:
+                continue
+
+            # ===== c3: شمعة هابطة قوية =====
+            c1_mid = (c1["open"] + c1["close"]) / 2
+            if not (c3["close"] < c3["open"] and
+                    c3["close"] < c1_mid and
+                    c3_body_ratio > 0.45):
+                continue
+
+            current = df["close"].iloc[-1]
+            if current > c3["close"] * 1.003:
+                continue
+
+            ob_top    = c1["high"]
+            ob_bottom = min(c1["open"], c1["close"], c2["low"])
+            sl        = round(c1["high"] + (c1_range * 0.10), 5)
+            entry     = round(c3["close"], 5)
+
+            return {
+                "direction": "bearish",
+                "entry":     entry,
+                "sl":        sl,
+                "ob_top":    round(ob_top, 5),
+                "ob_bottom": round(ob_bottom, 5),
+                "liq_pool":  round(prev_high, 5),
+                "wick_ratio": round(wick_ratio, 2),
+                "current":   round(current, 5),
+            }
+    return None
+
+
+def analyze_morning_star(sym_name, yf_sym, tf, news, debug=False):
+    """تحليل Morning Star مستقل عن DBOS"""
+    if news.get("hard_block"):
+        if debug: return f"{sym_name} {tf} 🌟: ❌ أخبار CPI/NFP/FOMC"
+        return None
+
+    df = get_candles(yf_sym, tf)
+    if df.empty or len(df) < 60:
+        if debug: return f"{sym_name} {tf} 🌟: ❌ بيانات فاضية"
+        return None
+
+    # H4 ترند — لازم يكون واضح
+    df_h4    = get_candles(yf_sym, "4h", 50)
+    h4_trend = detect_trend_structure(df_h4) if not df_h4.empty else "neutral"
+    if h4_trend == "neutral":
+        if debug: return f"{sym_name} {tf} 🌟: ❌ H4 محايد"
+        return None
+
+    h4_of = detect_order_flow(df_h4, h4_trend) if not df_h4.empty else 0.0
+
+    # Morning Star بنفس اتجاه H4
+    ms = detect_morning_star(df, h4_trend)
+    if not ms:
+        if debug: return f"{sym_name} {tf} 🌟: ❌ ما في نمط Morning Star"
+        return None
+
+    # البيانات المساعدة
+    df_d        = get_candles(yf_sym, "1d", 30)
+    daily_of    = detect_order_flow(df_d, h4_trend) if not df_d.empty else 0.0
+    daily_trend = detect_trend_structure(df_d)       if not df_d.empty else "neutral"
+    daily_match = daily_trend == h4_trend
+
+    has_bsl, bsl_level = check_bsl_ssl(df, h4_trend)
+
+    # السحب موجود دايماً (شرط أساسي في detect_morning_star)
+    ms_liq_sweep = True
+
+    # ===== نظام الجودة =====
+    # Base = 40 (نمط اكتمل + H4 ترند + سحب سيولة مؤكد)
+    quality = 40
+    quality += 20                          # سحب سيولة — دايماً موجود (شرط النمط)
+    if h4_of >= 0.7:     quality += 15
+    elif h4_of >= 0.5:   quality += 8
+    if daily_match:      quality += 10
+    if has_bsl:          quality += 15
+
+    quality = max(0, min(100, quality))
+
+    if quality < 70:
+        if debug: return f"{sym_name} {tf} 🌟: ❌ جودة {quality}% (أقل من 65)"
+        return None
+
+    entry = ms["entry"]
+    sl    = ms["sl"]
+    risk  = abs(entry - sl)
+    if risk <= 0:
+        return None
+
+    if h4_trend == "bullish":
+        tp1 = round(entry + risk * 2.0, 5)
+        tp2 = round(entry + risk * 4.0, 5)
+    else:
+        tp1 = round(entry - risk * 2.0, 5)
+        tp2 = round(entry - risk * 4.0, 5)
+
+    return {
+        "symbol":      sym_name,
+        "tf":          tf,
+        "trend":       h4_trend,
+        "strategy":    "morning_star",
+        "current":     ms["current"],
+        "entry":       entry,
+        "sl":          sl,
+        "tp1":         tp1,
+        "tp2":         tp2,
+        "ob":          {"top": ms["ob_top"], "bottom": ms["ob_bottom"],
+                        "candle_high": ms["ob_top"], "candle_low": ms["ob_bottom"]},
+        "in_ob":       ms["ob_bottom"] <= ms["current"] <= ms["ob_top"],
+        "liq_pool":    ms["liq_pool"],
+        "has_bsl":     has_bsl,
+        "bsl_level":   bsl_level,
+        "h4_of":       h4_of,
+        "liq_sweep":   ms_liq_sweep,
+        "daily_match": daily_match,
+        "has_pdh_pdl": False,
+        "has_lwh_lwl": False,
+        "weekly_match": False,
+        "quality":     quality,
+        "news":        news,
+        "idm_type":    "",
+        "idm_wick":    0,
+        "daily_of":    daily_of,
+        "daily_trend": daily_trend,
+    }
+
+
+def morning_star_msg(a):
+    """رسالة مخصصة لـ Morning Star"""
+    direction = "شراء 📈" if a["trend"] == "bullish" else "بيع 📉"
+    risk, label = get_risk_new(a["quality"])
+    risk_txt = f"❌ ما ندخل — {label}" if risk == 0 else f"💰 مخاطرة: {risk}% — {label}"
+    tv = TRADINGVIEW_LINKS.get(a["symbol"], "https://www.tradingview.com")
+    quality_bar = "█" * (a["quality"] // 20) + "░" * (5 - a["quality"] // 20)
+
+    # تفاصيل الجودة
+    extras = []
+    if a.get("liq_sweep"):   extras.append("✅ سحب سيولة قبل النمط (+20)")
+    if a.get("h4_of", 0) >= 0.7: extras.append("✅ H4 order flow قوي (+15)")
+    elif a.get("h4_of", 0) >= 0.5: extras.append("✅ H4 order flow متوسط (+8)")
+    if a.get("daily_match"): extras.append("✅ Daily ترند يدعم (+10)")
+    if a.get("has_bsl"):     extras.append(f"✅ BSL/SSL عند {a.get('bsl_level','')} (+15)")
+
+    news_txt = ""
+    if a["news"]["has_news"]:
+        news_txt = "⚠️ أخبار مهمة قريبة!\n"
+        for ev in a["news"]["events"]:
+            news_txt += f"  • {ev['title']} بعد {ev['hours']}س\n"
+
+    sep = "─────────────────"
+    msg  = f"🌟 Morning Star | {direction} | {a['symbol']} | {a['tf']}\n"
+    msg += f"{sep}\n"
+    if extras:
+        msg += "\n".join(extras) + "\n"
+    if a.get("liq_pool"): msg += f"🎯 Liq Pool عند: {a['liq_pool']}\n"
+    msg += news_txt
+    msg += f"{sep}\n"
+    msg += f"⚡ نمط اكتمل — ادخلي الحين!\n"
+    msg += f"📌 دخول Market عند: {a['entry']}\n"
+    msg += f"🛑 ستوب: {a['sl']}\n"
+    msg += f"✅ هدف 1: {a['tp1']}  (1:2)\n"
+    msg += f"🚀 هدف 2: {a['tp2']}  (1:4)\n"
+    msg += f"السعر الحالي: {round(a['current'], 4)}\n"
+    msg += f"منطقة OB: {round(a['ob']['bottom'],4)} — {round(a['ob']['top'],4)}\n"
+    msg += f"{sep}\n"
+    msg += f"جودة: {a['quality']}/100  {quality_bar}\n"
+    msg += f"{risk_txt}\n"
+    msg += f"📈 {tv}\n"
+    msg += "القرار إلك 💪"
+    return msg
+
+
 def setup_msg(a):
     direction   = "شراء 📈" if a["trend"] == "bullish" else "بيع 📉"
     arrow       = "🟢"      if a["trend"] == "bullish" else "🔴"
@@ -1039,7 +1444,9 @@ async def send_setup_with_buttons(bot, a, custom_msg=None):
         InlineKeyboardButton("✅ دخلت",    callback_data=f"entered_{trade_id}"),
         InlineKeyboardButton("❌ ما دخلت", callback_data=f"skipped_{trade_id}"),
     ]])
-    msg_text = custom_msg if custom_msg else setup_msg(a)
+    msg_text = custom_msg if custom_msg else (
+        morning_star_msg(a) if a.get("strategy") == "morning_star" else setup_msg(a)
+    )
     await bot.send_message(chat_id=CHAT_ID, text=msg_text, reply_markup=keyboard)
 
 
@@ -1166,6 +1573,7 @@ async def scan_markets(bot):
     now_ts   = datetime.now(RIYADH_TZ)
     today_str= now_ts.strftime("%Y-%m-%d")
 
+    # ===== Strategy 1: DBOS + IDM + OB =====
     for name, yf_sym in SYMBOLS.items():
         for tf in ["4h", "1h"]:
             key = f"{name}_{tf}"
@@ -1179,6 +1587,21 @@ async def scan_markets(bot):
                     found.append(r)
             except Exception as e:
                 logger.error(f"خطأ {name} {tf}: {e}")
+
+    # ===== Strategy 2: Morning Star =====
+    for name, yf_sym in SYMBOLS.items():
+        for tf in ["4h", "1h"]:
+            key = f"ms_{name}_{tf}"   # cooldown مستقل
+            last_sent_date = SENT_SETUPS.get(key)
+            if last_sent_date == today_str:
+                continue
+            try:
+                r = analyze_morning_star(name, yf_sym, tf, news)
+                if r:
+                    r["_sent_key"] = key
+                    found.append(r)
+            except Exception as e:
+                logger.error(f"خطأ MS {name} {tf}: {e}")
 
     if found:
         found.sort(key=lambda x: x["quality"], reverse=True)
@@ -1261,7 +1684,7 @@ async def journal_cmd(update, context):
 
 async def debug_cmd(update, context):
     news = check_news()
-    msg  = "🔍 تشخيص:\n─────────────────\n"
+    msg  = "🔵 DBOS + IDM + OB:\n─────────────────\n"
     for name, yf_sym in SYMBOLS.items():
         for tf in ["4h", "1h"]:
             try:
@@ -1274,6 +1697,21 @@ async def debug_cmd(update, context):
                     msg += f"❌ {name} {tf}: ما في سيتاب\n"
             except Exception as e:
                 msg += f"⚠️ {name} {tf}: {str(e)[:40]}\n"
+
+    msg += "\n🌟 Morning Star:\n─────────────────\n"
+    for name, yf_sym in SYMBOLS.items():
+        for tf in ["4h", "1h"]:
+            try:
+                r = analyze_morning_star(name, yf_sym, tf, news, debug=True)
+                if isinstance(r, str):
+                    msg += f"{r}\n"
+                elif isinstance(r, dict):
+                    msg += f"✅ {name} {tf} 🌟: جودة {r['quality']}%\n"
+                else:
+                    msg += f"❌ {name} {tf} 🌟: ما في نمط\n"
+            except Exception as e:
+                msg += f"⚠️ {name} {tf} 🌟: {str(e)[:40]}\n"
+
     await update.message.reply_text(msg)
 
 
