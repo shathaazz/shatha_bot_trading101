@@ -335,6 +335,7 @@ async def got_balance(update, context):
     if text.lower() != "/skip":
         try:
             ACCOUNT["current_balance"] = float(text.replace(",", "").replace("$", ""))
+            calc_auto_drawdown()  # احسب الدروداون تلقائياً
         except:
             await update.message.reply_text("رقم غلط، جربي مرة ثانية أو /skip")
             return S_BALANCE
@@ -1679,6 +1680,9 @@ async def status_cmd(update, context):
 async def progress_cmd(update, context):
     await update.message.reply_text(challenge_progress_msg())
 
+async def week_cmd(update, context):
+    await update.message.reply_text(week_report_msg())
+
 async def journal_cmd(update, context):
     await update.message.reply_text(weekly_report_msg())
 
@@ -1718,6 +1722,23 @@ async def debug_cmd(update, context):
 # ============================================================
 # ===== رسائل الحساب =====
 # ============================================================
+
+def calc_auto_drawdown():
+    """يحسب الدروداون تلقائياً من الرصيد الأصلي والحالي"""
+    original = ACCOUNT.get("balance", 0)
+    current  = ACCOUNT.get("current_balance", 0)
+    if original <= 0:
+        return
+    diff = original - current
+    if diff > 0:
+        dd_pct = round(diff / original * 100, 2)
+        ACCOUNT["drawdown_used"] = dd_pct
+        # pnl
+        ACCOUNT["pnl_percent"] = round((current - original) / original * 100, 2)
+    else:
+        ACCOUNT["drawdown_used"] = 0.0
+        ACCOUNT["pnl_percent"]   = round((current - original) / original * 100, 2)
+
 
 def daily_advice_msg():
     dd              = ACCOUNT["drawdown_used"]
@@ -1808,6 +1829,82 @@ def challenge_progress_msg():
     return msg
 
 
+def week_report_msg():
+    """تقرير الأسبوع الحالي بالأيام مع نصيحة"""
+    days_ar = {0:"الاثنين", 1:"الثلاثاء", 2:"الأربعاء",
+               3:"الخميس", 4:"الجمعة", 5:"السبت", 6:"الأحد"}
+    now = datetime.now(RIYADH_TZ)
+
+    # تجميع الصفقات حسب اليوم
+    by_day = {}
+    for t in JOURNAL.values():
+        ts = t.get("timestamp", "")
+        try:
+            day = datetime.strptime(ts[:10], "%Y-%m-%d").weekday()
+            day_name = days_ar.get(day, ts[:10])
+        except:
+            day_name = ts[:10] if ts else "غير محدد"
+        if day_name not in by_day:
+            by_day[day_name] = []
+        by_day[day_name].append(t)
+
+    closed = [t for t in JOURNAL.values() if t["status"] == "closed"]
+    active = [t for t in JOURNAL.values() if t["status"] == "active"]
+    wins   = [t for t in closed if (t.get("result_r") or 0) > 0]
+    losses = [t for t in closed if (t.get("result_r") or 0) < 0]
+    total_r = round(sum(t["result_r"] for t in closed if t.get("result_r")), 1) if closed else 0
+    win_rate = round(len(wins)/len(closed)*100) if closed else 0
+
+    msg  = f"📅 تقرير الأسبوع الحالي\n"
+    msg += f"─────────────────\n"
+
+    if not JOURNAL:
+        msg += "ما في صفقات هالأسبوع بعد 📋\n"
+    else:
+        # تفاصيل كل يوم
+        for day_name, trades in by_day.items():
+            msg += f"\n{day_name}:\n"
+            for t in trades:
+                if t["status"] == "closed":
+                    r = t.get("result_r", 0)
+                    icon = "✅" if r > 0 else "🔴"
+                    r_txt = f"+{r}R" if r > 0 else f"{r}R"
+                    msg += f"  {icon} {t['symbol']} {t['tf']} → {r_txt}\n"
+                elif t["status"] == "active":
+                    msg += f"  ⏳ {t['symbol']} {t['tf']} — مفتوحة\n"
+                else:
+                    msg += f"  ⏭ {t['symbol']} {t['tf']} — تجاهلت\n"
+
+        msg += f"\n─────────────────\n"
+        msg += f"إجمالي: {len(closed)} صفقة | ✅{len(wins)} | 🔴{len(losses)}\n"
+        if closed:
+            msg += f"نسبة الفوز: {win_rate}% | مجموع: {'+' if total_r>=0 else ''}{total_r}R\n"
+        if active:
+            msg += f"⏳ مفتوحة: {len(active)}\n"
+
+    # دروداون الأسبوع
+    dd_used = ACCOUNT["drawdown_used"]
+    remaining = ACCOUNT["max_drawdown"] - dd_used
+    msg += f"📉 دروداون مستخدم: {dd_used}% | باقي: {remaining:.1f}%\n"
+    msg += f"─────────────────\n"
+
+    # نصيحة بناءً على الأداء
+    if not closed:
+        msg += "الأسبوع بدأ، واصلي بالصبر والانتظار 🎯"
+    elif total_r >= 6:
+        msg += "أسبوع ممتاز! فكري تأمني الأرباح وتخففي المخاطرة 🌟"
+    elif total_r >= 3:
+        msg += "أسبوع كويس 💪 واصلي بنفس الانضباط"
+    elif total_r >= 0:
+        msg += "أسبوع متعادل، راجعي إيش ممكن تحسنيه 🧠"
+    elif len(losses) >= 2:
+        msg += "⚠️ خسارتين هالأسبوع — خذي استراحة وراجعي الجورنال"
+    else:
+        msg += "أسبوع صعب، المهم حمايتِ الحساب 🛡️"
+
+    return msg
+
+
 def weekly_report_msg():
     closed  = [t for t in JOURNAL.values() if t["status"] == "closed"]
     skipped = [t for t in JOURNAL.values() if t["status"] == "skipped"]
@@ -1844,6 +1941,7 @@ def weekly_report_msg():
 
 async def trading_loop(bot):
     load_data()
+    calc_auto_drawdown()  # احسب الدروداون عند البداية
 
     # ===== رسالة البداية =====
     if ACCOUNT.get("setup_done") and ACCOUNT.get("firm_name"):
@@ -1852,25 +1950,30 @@ async def trading_loop(bot):
             "verification": "Verification 🟡",
             "funded": "Funded 🟢"
         }.get(ACCOUNT["phase"], "")
+        dd_used = ACCOUNT["drawdown_used"]
+        remaining_max = ACCOUNT["max_drawdown"] - dd_used
         await bot.send_message(
             chat_id=CHAT_ID,
             text=(
                 f"✅ بوتك اشتغل يا شذا ✅\n"
                 f"─────────────────\n"
-                f"{ACCOUNT['firm_name']} | {phase_label}\n"
+                f"🏢 {ACCOUNT['firm_name']} | {phase_label}\n"
                 f"💰 ${ACCOUNT['current_balance']:,.0f} | "
-                f"دروداون: {ACCOUNT['max_drawdown']}% / {ACCOUNT['daily_drawdown']}% يومي\n"
+                f"PnL: {'+' if ACCOUNT['pnl_percent']>=0 else ''}{ACCOUNT['pnl_percent']}%\n"
+                f"📉 دروداون مستخدم: {dd_used}% | باقي: {remaining_max:.1f}%\n"
                 f"─────────────────\n"
                 f"/scan فحص فوري\n"
                 f"/advice نصايح اليوم\n"
                 f"/status حالة الحساب\n"
+                f"/week تقرير الأسبوع\n"
                 f"/update تحديث الحساب"
             )
         )
 
-    last_advice_day  = None
-    last_warn_hour   = -1
-    last_scan_slot   = -1   # نتبع آخر فترة سكان تلقائي (كل 30 دقيقة)
+    last_advice_day = None
+    last_warn_hour  = -1
+    last_scan_slot  = -1
+    last_report_day = None
 
     while True:
         try:
@@ -1894,10 +1997,10 @@ async def trading_loop(bot):
                 last_advice_day = today
 
             # ===== تقرير الأسبوع — الجمعة 8 مساءً =====
-            if now.weekday() == 4 and now.hour >= 20:
-                if not hasattr(trading_loop, 'last_report') or trading_loop.last_report != today:
+            if now.weekday() == 4 and now.hour == 20 and now.minute < 5:
+                if last_report_day != today:
                     await bot.send_message(chat_id=CHAT_ID, text=weekly_report_msg())
-                    trading_loop.last_report = today
+                    last_report_day = today
 
             # ===== تحذير صفقتين — كل 4 ساعات =====
             if DAILY_RISK["trades_entered_today"] >= 2:
@@ -1966,10 +2069,11 @@ async def main():
 
     # ===== تسجيل الأوامر =====
     app.add_handler(CommandHandler("start",    start_cmd))
-    app.add_handler(CommandHandler("scan",     scan_cmd))      # ← جديد
+    app.add_handler(CommandHandler("scan",     scan_cmd))
     app.add_handler(CommandHandler("advice",   advice_cmd))
     app.add_handler(CommandHandler("status",   status_cmd))
     app.add_handler(CommandHandler("progress", progress_cmd))
+    app.add_handler(CommandHandler("week",     week_cmd))
     app.add_handler(CommandHandler("journal",  journal_cmd))
     app.add_handler(CommandHandler("debug",    debug_cmd))
     app.add_handler(CallbackQueryHandler(handle_callback))
