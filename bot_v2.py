@@ -161,9 +161,21 @@ def save_data():
 
 def load_data():
     saved_acc = account_load()
+    # الحقول الرقمية — نتأكد إنها float مو str
+    float_fields = ["balance", "current_balance", "max_drawdown", "daily_drawdown",
+                    "drawdown_used", "daily_used", "pnl_percent", "profit_split"]
+    int_fields   = ["trades_week", "trades_today"]
     for k, v in saved_acc.items():
         if k in ACCOUNT:
-            ACCOUNT[k] = v
+            try:
+                if k in float_fields:
+                    ACCOUNT[k] = float(v) if v not in (None, "") else ACCOUNT[k]
+                elif k in int_fields:
+                    ACCOUNT[k] = int(float(v)) if v not in (None, "") else ACCOUNT[k]
+                else:
+                    ACCOUNT[k] = v
+            except:
+                pass  # لو فشل التحويل نحتفظ بالقيمة القديمة
 
     sheets_journal = journal_load()
     if sheets_journal:
@@ -712,10 +724,10 @@ def get_risk_new(quality):
     if quality < 70:
         return 0, "جودة منخفضة ❌"
 
-    max_dd    = ACCOUNT["max_drawdown"]
-    dd_used   = ACCOUNT["drawdown_used"]
-    daily_dd  = ACCOUNT["daily_drawdown"]
-    daily_used= ACCOUNT["daily_used"]
+    max_dd    = float(ACCOUNT["max_drawdown"]   or 0)
+    dd_used   = float(ACCOUNT["drawdown_used"]  or 0)
+    daily_dd  = float(ACCOUNT["daily_drawdown"] or 0)
+    daily_used= float(ACCOUNT["daily_used"]     or 0)
     dd_pct    = dd_used / max_dd * 100 if max_dd > 0 else 0
 
     if dd_pct >= 90:
