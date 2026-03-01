@@ -115,7 +115,7 @@ DAILY_TIPS = [
 JOURNAL        = {}
 TRADE_COUNTER  = [0]
 SENT_SETUPS    = {}
-CHAT_ID        = os.environ.get("CHAT_ID", "YOUR_CHAT_ID_HERE")
+CHAT_ID = int(os.environ.get("CHAT_ID", "0"))
 
 # ===== Daily Risk =====
 DAILY_RISK = {
@@ -165,6 +165,7 @@ def load_data():
     float_fields = ["balance", "current_balance", "max_drawdown", "daily_drawdown",
                     "drawdown_used", "daily_used", "pnl_percent", "profit_split"]
     int_fields   = ["trades_week", "trades_today"]
+    bool_fields  = ["setup_done"]
     for k, v in saved_acc.items():
         if k in ACCOUNT:
             try:
@@ -172,10 +173,13 @@ def load_data():
                     ACCOUNT[k] = float(v) if v not in (None, "") else ACCOUNT[k]
                 elif k in int_fields:
                     ACCOUNT[k] = int(float(v)) if v not in (None, "") else ACCOUNT[k]
+                elif k in bool_fields:
+                    # يحول "True"/"true"/1 كلها لـ True
+                    ACCOUNT[k] = str(v).strip().lower() in ("true", "1", "yes")
                 else:
                     ACCOUNT[k] = v
             except:
-                pass  # لو فشل التحويل نحتفظ بالقيمة القديمة
+                pass
 
     sheets_journal = journal_load()
     if sheets_journal:
