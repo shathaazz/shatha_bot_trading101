@@ -1948,6 +1948,7 @@ async def trading_loop(bot):
     calc_auto_drawdown()  # احسب الدروداون عند البداية
 
     # ===== رسالة البداية =====
+    await asyncio.sleep(5)  # انتظر حتى يستقر الاتصال
     if ACCOUNT.get("setup_done") and ACCOUNT.get("firm_name"):
         phase_label = {
             "challenge": "Challenge 🔴",
