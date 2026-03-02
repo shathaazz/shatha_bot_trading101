@@ -1526,6 +1526,14 @@ async def trading_loop(bot):
     load_data()
     calc_auto_drawdown()
 
+    CMDS = (
+        "─────────────────\n"
+        "/scan   فحص فوري\n"
+        "/advice نصايح اليوم\n"
+        "/status حالة الحساب\n"
+        "/week   تقرير الأسبوع\n"
+        "/update تحديث الحساب"
+    )
     if ACCOUNT.get("setup_done") and ACCOUNT.get("firm_name"):
         phase_label   = {"challenge":"Challenge 🔴","verification":"Verification 🟡","funded":"Funded 🟢"}.get(ACCOUNT["phase"],"")
         dd_used       = ACCOUNT["drawdown_used"]
@@ -1533,13 +1541,23 @@ async def trading_loop(bot):
         await bot.send_message(
             chat_id=CHAT_ID,
             text=(
-                f"✅ بوتك اشتغل يا شذا ✅\n─────────────────\n"
+                f"✅ بوتك اشتغل يا شذا ✅\n"
+                f"─────────────────\n"
                 f"🏢 {ACCOUNT['firm_name']} | {phase_label}\n"
                 f"💰 ${ACCOUNT['current_balance']:,.0f} | PnL: {'+' if ACCOUNT['pnl_percent']>=0 else ''}{ACCOUNT['pnl_percent']}%\n"
                 f"📉 دروداون مستخدم: {dd_used}% | باقي: {remaining_max:.1f}%\n"
+                f"{CMDS}"
+            )
+        )
+    else:
+        await bot.send_message(
+            chat_id=CHAT_ID,
+            text=(
+                f"✅ بوتك اشتغل يا شذا ✅\n"
                 f"─────────────────\n"
-                f"/scan فحص فوري\n/advice نصايح اليوم\n/status حالة الحساب\n"
-                f"/week تقرير الأسبوع\n/update تحديث الحساب"
+                f"ما عندي بيانات حسابك بعد 📋\n"
+                f"اكتبي /setup عشان نبدأ 👇\n"
+                f"{CMDS}"
             )
         )
 
