@@ -700,7 +700,8 @@ def find_ob(df, idm_idx, direction):
     منطق LuxAlgo Order Block:
     Bullish OB: شمعة أدنى low في المنطقة قبل الكسر
     Bearish OB: شمعة أعلى high في المنطقة قبل الكسر
-    OB = كامل الشمعة (high to low) — ICT standard
+    - OB zone (للرسم/الستوب) = كامل الشمعة high→low
+    - entry = سقف/قاع الجسم فقط (ICT standard)
     """
     if idm_idx is None or idm_idx < 3:
         return None
@@ -711,40 +712,34 @@ def find_ob(df, idm_idx, direction):
         return None
 
     if direction == "bullish":
-        # الشمعة ذات أدنى low — منشأ الحركة الصاعدة
         local_pos  = int(segment["low"].values.argmin())
         ob_idx     = search_start + local_pos
         c          = df.iloc[ob_idx]
         candle_range = c["high"] - c["low"]
-        if candle_range == 0:
-            return None
-        body       = abs(c["close"] - c["open"])
-        body_ratio = body / candle_range
+        if candle_range == 0: return None
+        body_ratio = abs(c["close"] - c["open"]) / candle_range
         return {
-            "top":         round(c["high"], 5),   # كامل الشمعة
-            "bottom":      round(c["low"],  5),
+            "top":         round(max(c["open"], c["close"]), 5),  # سقف الجسم = entry
+            "bottom":      round(min(c["open"], c["close"]), 5),  # قاع الجسم
             "index":       ob_idx,
             "body_ratio":  round(body_ratio, 2),
-            "candle_high": round(c["high"], 5),
+            "candle_high": round(c["high"], 5),  # للرسم والستوب
             "candle_low":  round(c["low"],  5),
         }
 
     else:  # bearish
-        # الشمعة ذات أعلى high — منشأ الحركة الهابطة
         local_pos  = int(segment["high"].values.argmax())
         ob_idx     = search_start + local_pos
         c          = df.iloc[ob_idx]
         candle_range = c["high"] - c["low"]
-        if candle_range == 0:
-            return None
-        body       = abs(c["close"] - c["open"])
-        body_ratio = body / candle_range
+        if candle_range == 0: return None
+        body_ratio = abs(c["close"] - c["open"]) / candle_range
         return {
-            "top":         round(c["high"], 5),   # كامل الشمعة
-            "bottom":      round(c["low"],  5),
+            "top":         round(max(c["open"], c["close"]), 5),  # قمة الجسم
+            "bottom":      round(min(c["open"], c["close"]), 5),  # قاع الجسم = entry
             "index":       ob_idx,
             "body_ratio":  round(body_ratio, 2),
-            "candle_high": round(c["high"], 5),
+            "candle_high": round(c["high"], 5),  # للرسم والستوب
             "candle_low":  round(c["low"],  5),
         }
 
