@@ -444,6 +444,107 @@ def check_news():
         return {"has_news": False, "hard_block": False, "events": []}
 
 
+def news_comedy_msg(events):
+    """رسالة كوميدية سعودية لأيام الأخبار الكبيرة"""
+    import random
+
+    # نحدد نوع الخبر
+    all_titles = " ".join(e["title"] for e in events).upper()
+    if "FOMC" in all_titles or "FEDERAL" in all_titles or "FED RATE" in all_titles:
+        news_type = "FOMC"
+    elif "NFP" in all_titles or "NON-FARM" in all_titles:
+        news_type = "NFP"
+    elif "CPI" in all_titles:
+        news_type = "CPI"
+    else:
+        news_type = "خبر"
+
+    hours = events[0]["hours"] if events else 0
+    title = events[0]["title"] if events else ""
+
+    timing = (
+        "بعد شوي!" if hours < 1
+        else f"بعد {hours:.0f} ساعة" if hours < 6
+        else f"اليوم الساعة {hours:.0f}"
+    )
+
+    fomc_msgs = [
+        f"⚠️ اليوم يوم FOMC يا شذا!\n─────────────────\n"
+        f"يعني البنك الفيدرالي راح يفتح بزه ويتكلم عن الفايدة 🎙️\n"
+        f"السوق كله واقف على رجل ونص ينتظر كلامه 😬\n"
+        f"احنا؟ جالسين بره الملعب نشرب قهوة ☕\n"
+        f"─────────────────\n"
+        f"⏰ {timing} | البوت موقوف حتى تنتهي العاصفة 🛑",
+
+        f"🚨 FOMC اليوم — بيان الفيدرالي {timing}!\n"
+        f"─────────────────\n"
+        f"باول راح يقف ويتكلم وكل كلمة تحرك السوق مليار دولار 💸\n"
+        f"لو قال 'hawkish' السوق ينزل\n"
+        f"لو قال 'dovish' السوق يطلع\n"
+        f"لو تعطس — الله يستر 😅\n"
+        f"─────────────────\n"
+        f"قرارنا: نلعب بعيد اليوم 🏃‍♀️ | البوت مو شايل أمانة",
+    ]
+
+    nfp_msgs = [
+        f"📢 يوم NFP يا شذا — أرقام الوظائف الأمريكية {timing}!\n"
+        f"─────────────────\n"
+        f"هذا الرقم يخلي المتداولين يتعرقون من غير ما يتحركون 😰\n"
+        f"لو الوظائف زادت — الدولار يعلّق\n"
+        f"لو نقصت — الذهب يطير\n"
+        f"لو جاء 'مخيب' — الكل يصرخ وإحنا نتفرج 🍿\n"
+        f"─────────────────\n"
+        f"اليوم الخبز يمشي لحاله | ما نلحق على أحد 🛑",
+
+        f"🔥 NFP اليوم! أخطر رقم في الشهر {timing}\n"
+        f"─────────────────\n"
+        f"يعني بكره الصبح أمريكا تقول: كم واحد اشتغل هالشهر؟\n"
+        f"السوق يخمن، ونحن نخمن، وكلنا غلط في الآخر 😂\n"
+        f"─────────────────\n"
+        f"قرار البوت: إجازة مدفوعة الأجر اليوم ☕🛑",
+    ]
+
+    cpi_msgs = [
+        f"📊 CPI اليوم — أرقام التضخم الأمريكي {timing}!\n"
+        f"─────────────────\n"
+        f"يعني بيقيسون غلاء المعيشة هناك 🧺\n"
+        f"لو الأسعار طالعة — الفيدرالي يرفع الفايدة\n"
+        f"لو نازلة — يمكن يريحنا 😅\n"
+        f"كلام كثير والسوق يهتز على طول\n"
+        f"─────────────────\n"
+        f"إحنا اليوم في بيتنا — السوق يلعب لوحده 🛑",
+
+        f"⚡ CPI اليوم يا شذا {timing}\n"
+        f"─────────────────\n"
+        f"رقم التضخم — اللي لو طلع عالي\n"
+        f"الناس تصيح، الذهب ينط، الدولار يتعالى 📈\n"
+        f"ولو نزل؟ نفس الصياح بس معكوس 😂\n"
+        f"─────────────────\n"
+        f"البوت قرر يتأمل اليوم 🧘‍♀️ | ما في صفقات 🛑",
+    ]
+
+    msgs = {
+        "FOMC": fomc_msgs,
+        "NFP":  nfp_msgs,
+        "CPI":  cpi_msgs,
+        "خبر":  [
+            f"⚠️ خبر مهم اليوم {timing}!\n"
+            f"─────────────────\n"
+            f"السوق متوتر وما يدري وين يروح 😬\n"
+            f"إحنا؟ جالسين نشاهد من بعيد 🍿\n"
+            f"─────────────────\n"
+            f"البوت موقوف حتى يهدى الوضع 🛑"
+        ],
+    }
+
+    msg = random.choice(msgs.get(news_type, msgs["خبر"]))
+    if len(events) > 1:
+        msg += f"\n\n📋 أخبار اليوم:\n"
+        for e in events[:3]:
+            msg += f"• {e['title']}\n"
+    return msg
+
+
 # ============================================================
 # ===== تحليل السوق =====
 # ============================================================
@@ -1858,6 +1959,11 @@ async def trading_loop(bot):
                 await bot.send_message(chat_id=CHAT_ID, text=daily_advice_msg())
                 await asyncio.sleep(1)
                 await bot.send_message(chat_id=CHAT_ID, text=challenge_progress_msg())
+                # لو في أخبار كبيرة اليوم — نرسل رسالة كوميدية
+                morning_news = check_news()
+                if morning_news.get("hard_block") and morning_news.get("events"):
+                    await asyncio.sleep(2)
+                    await bot.send_message(chat_id=CHAT_ID, text=news_comedy_msg(morning_news["events"]))
                 last_advice_day = today
 
             # ===== تقرير الأسبوع — الجمعة من 8 مساءً =====
