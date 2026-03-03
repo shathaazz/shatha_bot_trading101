@@ -114,6 +114,9 @@ TRADE_COUNTER  = [0]
 SENT_SETUPS    = {}
 CHAT_ID = int(os.environ.get("CHAT_ID", "0"))
 
+# قائمة انتظار الـ OB — أزواج وصلت DBOS وننتظر السعر يقترب
+OB_WATCHLIST = {}  # key -> {symbol, tf, ob, trend, entry, sl, tp1, tp2, quality, added_at}
+
 DAILY_RISK = {
     "trading_stopped":    False,
     "stopped_until_date": None,
@@ -675,7 +678,7 @@ def check_bsl_ssl(df, direction, lookback=50):
 
 
 def calc_quality_new(liq_sweep, h4_of, daily_of, has_bsl, has_pdh_pdl,
-                     has_lwh_lwl, idm_wick, ob_body, hard_news):
+                     has_lwh_lwl, idm_wick, ob_body, hard_news, monthly_match=True):
     if hard_news: return 0
     w = WEIGHTS_MEMORY
     score = 0
@@ -689,6 +692,8 @@ def calc_quality_new(liq_sweep, h4_of, daily_of, has_bsl, has_pdh_pdl,
     if has_lwh_lwl:      score += 10 * w.get("lwh_lwl", 1.0)
     if idm_wick > 0.5:   score += 3  * w.get("idm_wick", 1.0)
     if ob_body > 0.6:    score += 3  * w.get("ob_body",  1.0)
+    # الشهري مو شرط — لو يدعم يضيف نقاط بس، لو عكس ما يلغي شي
+    if monthly_match:    score += 5
     return max(0, min(100, round(score)))
 
 
@@ -814,14 +819,19 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
     if lwh and lwl:
         if trend == "bullish" and lwh > current: has_lwh_lwl = True
         elif trend == "bearish" and lwl < current: has_lwh_lwl = True
-    df_w         = get_candles(yf_sym, "1wk", 20)
-    weekly_trend = detect_trend_structure(df_w) if not df_w.empty else "neutral"
-    weekly_match = weekly_trend == trend
+    df_w          = get_candles(yf_sym, "1wk", 20)
+    weekly_trend  = detect_trend_structure(df_w) if not df_w.empty else "neutral"
+    weekly_match  = weekly_trend == trend
+    # HTF شهري — الصورة الكبيرة
+    df_mo         = get_candles(yf_sym, "1mo", 12)
+    monthly_trend = detect_trend_structure(df_mo) if not df_mo.empty else "neutral"
+    monthly_match = monthly_trend == trend or monthly_trend == "neutral"
     quality = calc_quality_new(
         liq_sweep=liq_sweep, h4_of=h4_of, daily_of=daily_of,
         has_bsl=has_bsl, has_pdh_pdl=has_pdh_pdl, has_lwh_lwl=has_lwh_lwl,
         idm_wick=idm.get("wick_ratio", 0), ob_body=ob.get("body_ratio", 0),
         hard_news=news.get("hard_block", False),
+        monthly_match=monthly_match,
     )
     if quality < 70:
         if debug: return f"{sym_name} {tf}: ❌ جودة {quality}% (أقل من 70)"
@@ -849,6 +859,7 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
         "has_pdh_pdl": has_pdh_pdl, "pdh": pdh, "pdl": pdl,
         "has_lwh_lwl": has_lwh_lwl, "lwh": lwh, "lwl": lwl,
         "daily_trend": daily_trend, "weekly_match": weekly_match,
+        "monthly_trend": monthly_trend, "monthly_match": monthly_match,
         "quality": quality, "news": news,
         "idm_type": idm.get("type", ""), "idm_wick": idm.get("wick_ratio", 0),
     }
@@ -1052,11 +1063,12 @@ def setup_msg(a):
     tv          = TRADINGVIEW_LINKS.get(a["symbol"], "https://www.tradingview.com")
     quality_bar = "█" * (a["quality"] // 20) + "░" * (5 - a["quality"] // 20)
     extras = []
-    if a.get("liq_sweep"):   extras.append("✅ سحب سيولة قبل DBOS")
-    if a.get("has_bsl"):     extras.append(f"💧 BSL عند {a.get('bsl_level','')}")
-    if a.get("has_pdh_pdl"): extras.append("📅 PDH/PDL في الاتجاه")
-    if a.get("has_lwh_lwl"): extras.append("📆 LWH/LWL في الاتجاه")
-    if a.get("weekly_match"):extras.append("✅ أسبوعي يدعم")
+    if a.get("liq_sweep"):    extras.append("✅ سحب سيولة قبل DBOS")
+    if a.get("has_bsl"):      extras.append(f"💧 BSL عند {a.get('bsl_level','')}")
+    if a.get("has_pdh_pdl"):  extras.append("📅 PDH/PDL في الاتجاه")
+    if a.get("has_lwh_lwl"):  extras.append("📆 LWH/LWL في الاتجاه")
+    if a.get("weekly_match"): extras.append("✅ أسبوعي يدعم")
+    if a.get("monthly_match"):extras.append("🌙 شهري يدعم")
     news_txt = ""
     if a["news"]["has_news"]:
         news_txt = "⚠️ أخبار مهمة قريبة!\n"
@@ -1205,8 +1217,14 @@ async def handle_callback(update, context):
 # ===== مراقبة الصفقات =====
 # ============================================================
 
+# تتبع التنبيهات عشان ما يكرر نفس الرسالة
+OB_ALERTS_SENT   = set()   # trade_id اللي تم تنبيه OB قربها
+TP1_TRAIL_SENT   = set()   # trade_id اللي تم إرسال تذكير Trailing
+
 async def monitor_trades(bot):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    # ===== 1. مراقبة الصفقات المفتوحة =====
     active = {k: v for k, v in JOURNAL.items() if v["status"] == "active"}
     for trade_id, t in active.items():
         try:
@@ -1216,23 +1234,88 @@ async def monitor_trades(bot):
             if df.empty: continue
             current   = df["close"].iloc[-1]
             direction = t["direction"]
+
             hit_tp2 = (direction=="bullish" and current>=t["tp2"]) or (direction=="bearish" and current<=t["tp2"])
             hit_tp1 = (direction=="bullish" and current>=t["tp1"]) or (direction=="bearish" and current<=t["tp1"])
             hit_sl  = (direction=="bullish" and current<=t["sl"])  or (direction=="bearish" and current>=t["sl"])
+
             if hit_tp2:
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ أكدي TP2", callback_data=f"result_{trade_id}_tp2")]])
                 await bot.send_message(chat_id=CHAT_ID, text=f"🚀 يبدو وصل هدف 2 على {t['symbol']}!", reply_markup=kb)
+
             elif hit_tp1:
+                # Trailing Stop تذكير — مرة وحدة فقط
+                if trade_id not in TP1_TRAIL_SENT:
+                    TP1_TRAIL_SENT.add(trade_id)
+                    trail_sl = round(t["entry"], 5)
+                    await bot.send_message(
+                        chat_id=CHAT_ID,
+                        text=(
+                            f"✅ {t['symbol']} وصل هدف 1! (+2R) 🎯\n"
+                            f"─────────────────\n"
+                            f"💡 Trailing Stop: حركي الستوب لنقطة الدخول\n"
+                            f"📌 الستوب الجديد: {trail_sl}\n"
+                            f"🚀 خلي الصفقة تشتغل للهدف 2\n"
+                            f"─────────────────\n"
+                            f"وين تغلقين؟"
+                        )
+                    )
                 kb = InlineKeyboardMarkup([[
                     InlineKeyboardButton("✅ TP1", callback_data=f"result_{trade_id}_tp1"),
                     InlineKeyboardButton("🚀 TP2", callback_data=f"result_{trade_id}_tp2"),
                 ]])
-                await bot.send_message(chat_id=CHAT_ID, text=f"✅ يبدو وصل هدف 1 على {t['symbol']}!", reply_markup=kb)
+                await bot.send_message(chat_id=CHAT_ID, text=f"وين أغلقتِ {t['symbol']}؟", reply_markup=kb)
+
             elif hit_sl:
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔴 أكدي الستوب", callback_data=f"result_{trade_id}_sl")]])
                 await bot.send_message(chat_id=CHAT_ID, text=f"⚠️ يبدو لمس الستوب على {t['symbol']}!", reply_markup=kb)
+
         except Exception as e:
             logger.error(f"خطأ مراقبة {trade_id}: {e}")
+
+    # ===== 2. تتبع السعر من OB للصفقات الـ pending =====
+    pending = {k: v for k, v in JOURNAL.items() if v["status"] == "pending"}
+    for trade_id, t in pending.items():
+        try:
+            if trade_id in OB_ALERTS_SENT: continue
+            yf_sym = t["yf_sym"]
+            if not yf_sym: continue
+            df = get_candles(yf_sym, "1h", 3)
+            if df.empty: continue
+            current   = df["close"].iloc[-1]
+            direction = t["direction"]
+            entry     = t["entry"]
+            ob_top    = t.get("analysis", {}).get("ob", {}).get("top", entry)
+            ob_bottom = t.get("analysis", {}).get("ob", {}).get("bottom", entry)
+            ob_range  = ob_top - ob_bottom if ob_top and ob_bottom else 0
+
+            if ob_range <= 0: continue
+
+            # السعر اقترب من OB بـ 20% من حجمه
+            proximity = ob_range * 0.20
+            near_ob = (
+                (direction == "bullish" and ob_bottom - proximity <= current <= ob_top + proximity) or
+                (direction == "bearish" and ob_bottom - proximity <= current <= ob_top + proximity)
+            )
+
+            if near_ob:
+                OB_ALERTS_SENT.add(trade_id)
+                arrow = "📈" if direction == "bullish" else "📉"
+                await bot.send_message(
+                    chat_id=CHAT_ID,
+                    text=(
+                        f"⚡ السعر اقترب من OB! {arrow}\n"
+                        f"─────────────────\n"
+                        f"📊 {t['symbol']} {t['tf']}\n"
+                        f"💰 السعر الحالي: {round(current, 4)}\n"
+                        f"🎯 منطقة OB: {round(ob_bottom,4)} — {round(ob_top,4)}\n"
+                        f"📌 دخولك عند: {entry}\n"
+                        f"─────────────────\n"
+                        f"استعدي! 👀"
+                    )
+                )
+        except Exception as e:
+            logger.error(f"خطأ تتبع OB {trade_id}: {e}")
 
 
 # ============================================================
@@ -1290,9 +1373,161 @@ async def _background_scan(bot):
         logger.error(f"خطأ سكان خلفية: {e}")
 
 
+async def _market_status_report(bot):
+    """تقرير السوق كل ساعتين — وش يشوف البوت فعلاً"""
+    try:
+        now  = datetime.now(RIYADH_TZ)
+        news = check_news()
+
+        if news.get("hard_block"):
+            await bot.send_message(
+                chat_id=CHAT_ID,
+                text=f"📊 تقرير السوق | {now.strftime('%H:%M')}\n"
+                     f"─────────────────\n"
+                     f"🚫 أخبار CPI/NFP/FOMC — البوت واقف حتى تنتهي"
+            )
+            return
+
+        STATUS_ICONS = {
+            "محايد":        "⚫",
+            "DBOS":         "🟡",
+            "IDM":          "🟠",
+            "OB":           "🔵",
+            "جودة":         "🟢",
+            "order flow":   "🔴",
+            "عكس":          "🔴",
+            "بيانات":       "⚪",
+        }
+
+        lines   = []
+        found_setup = False
+
+        for name, yf_sym in SYMBOLS.items():
+            # نجرب 4h أول ثم 1h ونأخذ أفضل نتيجة
+            best_line  = None
+            best_stage = 0  # كلما أعلى كلما وصل أبعد في التحليل
+
+            for tf in ["4h", "1h"]:
+                r = analyze(name, yf_sym, tf, news, debug=True)
+                if isinstance(r, dict):
+                    # سيتاب كامل!
+                    best_line  = f"🟢 {name} {tf}: سيتاب! جودة {r['quality']}% 🔥"
+                    best_stage = 99
+                    found_setup = True
+                    break
+                elif isinstance(r, str):
+                    # نحدد المرحلة اللي وصلها
+                    stage = (6 if "جودة" in r
+                             else 5 if "OB" in r and "ما في" not in r
+                             else 4 if "IDM" in r and "ما في" not in r
+                             else 3 if "DBOS" in r and "ما في" not in r
+                             else 2 if "order flow" in r or "عكس" in r
+                             else 1)
+                    if stage > best_stage:
+                        best_stage = stage
+                        # أيقونة بناء على المرحلة
+                        icon = ("🔵" if stage >= 4
+                                else "🟡" if stage == 3
+                                else "🔴" if stage == 2
+                                else "⚫")
+                        # نظّف النص
+                        clean = r.split(": ", 1)[-1] if ": " in r else r
+                        best_line = f"{icon} {name}: {clean}"
+
+            if best_line:
+                lines.append(best_line)
+
+        sep = "─────────────────"
+        msg = f"📊 تقرير السوق | {now.strftime('%H:%M')} الرياض\n{sep}\n"
+        msg += "\n".join(lines) + f"\n{sep}\n"
+
+        if found_setup:
+            msg += "⚡ فيه فرص — شوفي الإشارات فوق!"
+        else:
+            near  = sum(1 for l in lines if "🔵" in l or "🟡" in l)
+            quiet = sum(1 for l in lines if "⚫" in l)
+            if near:
+                msg += f"⏳ {near} زوج وصل مراحل متقدمة — قريب!"
+            else:
+                msg += f"😴 السوق هادي ({quiet} زوج محايد)\nما في سيتاب بشروطنا الحين"
+
+        if news["has_news"]:
+            msg += "\n⚠️ " + " | ".join(ev["title"] for ev in news["events"][:2])
+
+        await bot.send_message(chat_id=CHAT_ID, text=msg)
+
+    except Exception as e:
+        logger.error(f"خطأ تقرير السوق: {e}")
+
+
 # ============================================================
 # ===== رسائل الحساب =====
 # ============================================================
+
+def personal_stats_msg():
+    """إحصائيات شخصية مفصلة من الجورنال"""
+    closed = [t for t in JOURNAL.values() if t["status"] == "closed" and t.get("result_r") is not None]
+    if len(closed) < 3:
+        return "ما في بيانات كافية بعد 📊\nادخلي على الأقل 3 صفقات مغلقة وأعطيك إحصائياتك 💪"
+
+    wins     = [t for t in closed if t["result_r"] > 0]
+    losses   = [t for t in closed if t["result_r"] < 0]
+    total_r  = round(sum(t["result_r"] for t in closed), 1)
+    win_rate = round(len(wins)/len(closed)*100)
+    avg_win  = round(sum(t["result_r"] for t in wins)/len(wins), 2)   if wins   else 0
+    avg_loss = round(sum(t["result_r"] for t in losses)/len(losses), 2) if losses else 0
+
+    # أفضل/أسوأ زوج
+    by_symbol = {}
+    for t in closed:
+        by_symbol.setdefault(t["symbol"], []).append(t["result_r"])
+    sym_stats = {s: round(sum(v),1) for s,v in by_symbol.items()}
+    best_sym  = max(sym_stats, key=sym_stats.get)
+    worst_sym = min(sym_stats, key=sym_stats.get)
+
+    # أفضل/أسوأ يوم
+    days_ar = {0:"الاثنين",1:"الثلاثاء",2:"الأربعاء",3:"الخميس",4:"الجمعة",5:"السبت",6:"الأحد"}
+    by_day  = {}
+    for t in closed:
+        try:
+            day = days_ar[datetime.strptime(t["timestamp"][:10], "%Y-%m-%d").weekday()]
+            by_day.setdefault(day, []).append(t["result_r"])
+        except: pass
+    day_stats = {d: round(sum(v),1) for d,v in by_day.items()}
+    best_day  = max(day_stats, key=day_stats.get) if day_stats else "-"
+    worst_day = min(day_stats, key=day_stats.get) if day_stats else "-"
+
+    # أفضل تايم فريم
+    by_tf   = {}
+    for t in closed:
+        by_tf.setdefault(t.get("tf","?"), []).append(t["result_r"])
+    tf_stats = {tf: round(sum(v)/len(v),2) for tf,v in by_tf.items()}
+    best_tf  = max(tf_stats, key=tf_stats.get) if tf_stats else "-"
+
+    # متوسط جودة رابحة vs خاسرة
+    avg_q_win  = round(sum(t.get("quality",0) for t in wins)/len(wins))   if wins   else 0
+    avg_q_loss = round(sum(t.get("quality",0) for t in losses)/len(losses)) if losses else 0
+
+    sep = "─────────────────"
+    msg  = f"📈 إحصائياتك الشخصية\n{sep}\n"
+    msg += f"إجمالي: {len(closed)} | ✅{len(wins)} ربح | 🔴{len(losses)} خسارة\n"
+    msg += f"نسبة الفوز: {win_rate}%\n"
+    msg += f"مجموع R: {'+' if total_r>=0 else ''}{total_r}R\n"
+    msg += f"متوسط ربح: +{avg_win}R | متوسط خسارة: {avg_loss}R\n"
+    msg += f"{sep}\n"
+    msg += f"🏆 أفضل زوج:  {best_sym}  ({sym_stats[best_sym]:+}R)\n"
+    msg += f"💀 أسوأ زوج:  {worst_sym} ({sym_stats[worst_sym]:+}R)\n"
+    msg += f"📅 أفضل يوم:  {best_day}  ({day_stats.get(best_day,0):+}R)\n"
+    msg += f"😓 أصعب يوم: {worst_day} ({day_stats.get(worst_day,0):+}R)\n"
+    msg += f"⏱ أفضل TF:   {best_tf}  (متوسط {tf_stats.get(best_tf,0):+}R)\n"
+    msg += f"{sep}\n"
+    msg += f"متوسط جودة الرابحة: {avg_q_win}%\n"
+    msg += f"متوسط جودة الخاسرة: {avg_q_loss}%\n"
+    if avg_q_win > avg_q_loss + 5:
+        msg += "✅ الجودة العالية تفرق — واصلي الانتظار 💪\n"
+    msg += sep
+    return msg
+
 
 def calc_auto_drawdown():
     original = ACCOUNT.get("balance", 0)
@@ -1457,9 +1692,14 @@ async def start_cmd(update, context):
             f"أهلاً! 🌟\n─────────────────\n"
             f"🏢 {ACCOUNT['firm_name']} | {phase_label}\n💰 ${ACCOUNT['current_balance']:,.0f}\n"
             f"─────────────────\n"
-            f"/scan فحص فوري\n/advice نصايح اليوم\n/status حالة الحساب\n"
-            f"/progress تقدم الـ Challenge\n/week تقرير الأسبوع\n"
-            f"/update تحديث الحساب\n/debug تشخيص السوق"
+            f"/scan     فحص فوري\n"
+            f"/advice   نصايح اليوم\n"
+            f"/status   حالة الحساب\n"
+            f"/progress تقدم الـ Challenge\n"
+            f"/week     تقرير الأسبوع\n"
+            f"/stats    إحصائياتك الشخصية\n"
+            f"/update   تحديث الحساب\n"
+            f"/debug    تشخيص السوق"
         )
 
 async def scan_cmd(update, context):
@@ -1477,6 +1717,9 @@ async def _do_scan_reply(bot, original_msg):
             await original_msg.edit_text(random.choice(NO_SETUP_MSGS))
     except Exception as e:
         await original_msg.edit_text(f"⚠️ خطأ في الفحص: {str(e)[:60]}")
+
+async def stats_cmd(update, context):
+    await update.message.reply_text(personal_stats_msg())
 
 async def advice_cmd(update, context):
     await update.message.reply_text(daily_advice_msg())
@@ -1528,11 +1771,12 @@ async def trading_loop(bot):
 
     CMDS = (
         "─────────────────\n"
-        "/scan   فحص فوري\n"
-        "/advice نصايح اليوم\n"
-        "/status حالة الحساب\n"
-        "/week   تقرير الأسبوع\n"
-        "/update تحديث الحساب"
+        "/scan     فحص فوري\n"
+        "/advice   نصايح اليوم\n"
+        "/status   حالة الحساب\n"
+        "/week     تقرير الأسبوع\n"
+        "/stats    إحصائياتك الشخصية\n"
+        "/update   تحديث الحساب"
     )
     if ACCOUNT.get("setup_done") and ACCOUNT.get("firm_name"):
         phase_label   = {"challenge":"Challenge 🔴","verification":"Verification 🟡","funded":"Funded 🟢"}.get(ACCOUNT["phase"],"")
@@ -1598,6 +1842,12 @@ async def trading_loop(bot):
                     )
                     last_warn_hour = now.hour
 
+            # ===== تقرير السوق كل ساعتين =====
+            if now.hour % 2 == 0 and now.minute < 2:
+                if not hasattr(trading_loop, 'last_mkt_report') or trading_loop.last_mkt_report != now.hour:
+                    asyncio.create_task(_market_status_report(bot))
+                    trading_loop.last_mkt_report = now.hour
+
             # ===== سكان تلقائي كل 30 دقيقة =====
             current_slot = now.hour * 2 + (1 if now.minute >= 30 else 0)
             if current_slot != last_scan_slot:
@@ -1651,6 +1901,7 @@ async def main():
     app.add_handler(CommandHandler("status",   status_cmd))
     app.add_handler(CommandHandler("progress", progress_cmd))
     app.add_handler(CommandHandler("week",     week_cmd))
+    app.add_handler(CommandHandler("stats",    stats_cmd))
     app.add_handler(CommandHandler("journal",  journal_cmd))
     app.add_handler(CommandHandler("debug",    debug_cmd))
     app.add_handler(CallbackQueryHandler(handle_callback))
