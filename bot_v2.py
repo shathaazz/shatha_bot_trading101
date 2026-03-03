@@ -698,70 +698,52 @@ def find_idm(df, dbos_idx, direction):
 def find_ob(df, idm_idx, direction):
     """
     منطق LuxAlgo Order Block:
-    Bullish OB: بعد كسر Swing High — الشمعة ذات أدنى low في المنطقة قبل الكسر
-    Bearish OB: بعد كسر Swing Low  — الشمعة ذات أعلى high في المنطقة قبل الكسر
-    الـ OB = high وlow لتلك الشمعة (مو الجسم فقط)
+    Bullish OB: شمعة أدنى low في المنطقة قبل الكسر
+    Bearish OB: شمعة أعلى high في المنطقة قبل الكسر
+    OB = كامل الشمعة (high to low) — ICT standard
     """
     if idm_idx is None or idm_idx < 3:
         return None
 
-    # نبحث من بداية الحركة للـ IDM
     search_start = max(0, idm_idx - 30)
     segment = df.iloc[search_start:idm_idx]
     if len(segment) < 2:
         return None
 
     if direction == "bullish":
-        # الشمعة ذات أدنى low — هي منشأ الحركة الصاعدة
-        ob_idx_local = segment["low"].idxmin()
-        ob_idx = df.index.get_loc(ob_idx_local) if ob_idx_local in df.index else None
-        if ob_idx is None:
-            # fallback: رقم مباشر
-            ob_idx = segment["low"].values.argmin() + search_start
-
-        c = df.iloc[ob_idx]
+        # الشمعة ذات أدنى low — منشأ الحركة الصاعدة
+        local_pos  = int(segment["low"].values.argmin())
+        ob_idx     = search_start + local_pos
+        c          = df.iloc[ob_idx]
         candle_range = c["high"] - c["low"]
         if candle_range == 0:
             return None
-        body = abs(c["close"] - c["open"])
+        body       = abs(c["close"] - c["open"])
         body_ratio = body / candle_range
-
-        # OB top = أعلى الشمعة أو الجسم، bottom = أدنى low
-        ob_top    = max(c["open"], c["close"])  # سقف الجسم
-        ob_bottom = c["low"]                     # قاع الشمعة كاملة
-
         return {
-            "top":        round(ob_top, 5),
-            "bottom":     round(ob_bottom, 5),
-            "index":      ob_idx,
-            "body_ratio": round(body_ratio, 2),
+            "top":         round(c["high"], 5),   # كامل الشمعة
+            "bottom":      round(c["low"],  5),
+            "index":       ob_idx,
+            "body_ratio":  round(body_ratio, 2),
             "candle_high": round(c["high"], 5),
             "candle_low":  round(c["low"],  5),
         }
 
     else:  # bearish
-        # الشمعة ذات أعلى high — هي منشأ الحركة الهابطة
-        ob_idx_local = segment["high"].idxmax()
-        ob_idx = df.index.get_loc(ob_idx_local) if ob_idx_local in df.index else None
-        if ob_idx is None:
-            ob_idx = segment["high"].values.argmax() + search_start
-
-        c = df.iloc[ob_idx]
+        # الشمعة ذات أعلى high — منشأ الحركة الهابطة
+        local_pos  = int(segment["high"].values.argmax())
+        ob_idx     = search_start + local_pos
+        c          = df.iloc[ob_idx]
         candle_range = c["high"] - c["low"]
         if candle_range == 0:
             return None
-        body = abs(c["close"] - c["open"])
+        body       = abs(c["close"] - c["open"])
         body_ratio = body / candle_range
-
-        # OB top = أعلى high، bottom = أدنى الجسم
-        ob_top    = c["high"]                    # قمة الشمعة كاملة
-        ob_bottom = min(c["open"], c["close"])   # أدنى الجسم
-
         return {
-            "top":        round(ob_top, 5),
-            "bottom":     round(ob_bottom, 5),
-            "index":      ob_idx,
-            "body_ratio": round(body_ratio, 2),
+            "top":         round(c["high"], 5),   # كامل الشمعة
+            "bottom":      round(c["low"],  5),
+            "index":       ob_idx,
+            "body_ratio":  round(body_ratio, 2),
             "candle_high": round(c["high"], 5),
             "candle_low":  round(c["low"],  5),
         }
