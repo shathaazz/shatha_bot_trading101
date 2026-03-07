@@ -1539,6 +1539,11 @@ async def send_setup_with_buttons(bot, a, custom_msg=None):
     global TRADE_COUNTER
     TRADE_COUNTER[0] += 1
     trade_id = str(TRADE_COUNTER[0])
+    # تحديد اسم الاستراتيجية
+    strategy_raw = a.get("strategy", "ict")
+    strategy_map = {"morning_star": "morning_star", "cisd": "cisd"}
+    strategy     = strategy_map.get(strategy_raw, "ict")
+
     JOURNAL[trade_id] = {
         "symbol": a["symbol"], "tf": a["tf"], "direction": a["trend"],
         "entry": a["entry"], "sl": a["sl"], "tp1": a["tp1"], "tp2": a["tp2"],
@@ -1548,6 +1553,7 @@ async def send_setup_with_buttons(bot, a, custom_msg=None):
         "quality": a.get("quality", 0), "h4_of": a.get("h4_of", 0),
         "liq_sweep": a.get("liq_sweep", False), "has_bsl": a.get("has_bsl", False),
         "has_pdh_pdl": a.get("has_pdh_pdl", False), "has_lwh_lwl": a.get("has_lwh_lwl", False),
+        "strategy": strategy,
         "analysis": a,
     }
     journal_add(trade_id, JOURNAL[trade_id])
@@ -1870,22 +1876,49 @@ async def _market_status_report(bot):
 # ===== رسائل الحساب =====
 # ============================================================
 
+def _strategy_stats_block(trades, label, icon):
+    """بلوك إحصائيات لاستراتيجية واحدة"""
+    if not trades:
+        return f"{icon} {label}: ما في بيانات بعد\n"
+    wins     = [t for t in trades if t["result_r"] > 0]
+    losses   = [t for t in trades if t["result_r"] < 0]
+    total_r  = round(sum(t["result_r"] for t in trades), 1)
+    win_rate = round(len(wins) / len(trades) * 100)
+    avg_q    = round(sum(t.get("quality", 0) for t in trades) / len(trades))
+    # توصية الريسك بناء على Win Rate
+    if win_rate >= 65:
+        risk_rec = "1% 🔥"
+    elif win_rate >= 55:
+        risk_rec = "0.75% 💪"
+    else:
+        risk_rec = "0.5% 👍"
+    line  = f"{icon} {label}:\n"
+    line += f"   {len(trades)} صفقة | ✅{len(wins)} ربح | 🔴{len(losses)} خسارة\n"
+    line += f"   نسبة الفوز: {win_rate}% | مجموع: {'+' if total_r>=0 else ''}{total_r}R\n"
+    line += f"   متوسط الجودة: {avg_q}%\n"
+    line += f"   الريسك الموصى: {risk_rec}\n"
+    return line
+
+
 def personal_stats_msg():
     closed = [t for t in JOURNAL.values() if t["status"] == "closed" and t.get("result_r") is not None]
     if len(closed) < 3:
         return "ما في بيانات كافية بعد 📊\nادخلي على الأقل 3 صفقات مغلقة وأعطيك إحصائياتك 💪"
+
     wins     = [t for t in closed if t["result_r"] > 0]
     losses   = [t for t in closed if t["result_r"] < 0]
     total_r  = round(sum(t["result_r"] for t in closed), 1)
     win_rate = round(len(wins)/len(closed)*100)
     avg_win  = round(sum(t["result_r"] for t in wins)/len(wins), 2)   if wins   else 0
     avg_loss = round(sum(t["result_r"] for t in losses)/len(losses), 2) if losses else 0
+
     by_symbol = {}
     for t in closed:
         by_symbol.setdefault(t["symbol"], []).append(t["result_r"])
     sym_stats = {s: round(sum(v),1) for s,v in by_symbol.items()}
     best_sym  = max(sym_stats, key=sym_stats.get)
     worst_sym = min(sym_stats, key=sym_stats.get)
+
     days_ar = {0:"الاثنين",1:"الثلاثاء",2:"الأربعاء",3:"الخميس",4:"الجمعة",5:"السبت",6:"الأحد"}
     by_day  = {}
     for t in closed:
@@ -1896,19 +1929,34 @@ def personal_stats_msg():
     day_stats = {d: round(sum(v),1) for d,v in by_day.items()}
     best_day  = max(day_stats, key=day_stats.get) if day_stats else "-"
     worst_day = min(day_stats, key=day_stats.get) if day_stats else "-"
+
     by_tf   = {}
     for t in closed:
         by_tf.setdefault(t.get("tf","?"), []).append(t["result_r"])
     tf_stats = {tf: round(sum(v)/len(v),2) for tf,v in by_tf.items()}
     best_tf  = max(tf_stats, key=tf_stats.get) if tf_stats else "-"
+
     avg_q_win  = round(sum(t.get("quality",0) for t in wins)/len(wins))   if wins   else 0
     avg_q_loss = round(sum(t.get("quality",0) for t in losses)/len(losses)) if losses else 0
+
+    # ===== إحصائيات كل استراتيجية =====
+    ict_trades = [t for t in closed if t.get("strategy","ict") == "ict"]
+    ms_trades  = [t for t in closed if t.get("strategy") == "morning_star"]
+    cs_trades  = [t for t in closed if t.get("strategy") == "cisd"]
+
     sep = "─────────────────"
     msg  = f"📈 إحصائياتك الشخصية\n{sep}\n"
     msg += f"إجمالي: {len(closed)} | ✅{len(wins)} ربح | 🔴{len(losses)} خسارة\n"
-    msg += f"نسبة الفوز: {win_rate}%\n"
+    msg += f"نسبة الفوز الكلية: {win_rate}%\n"
     msg += f"مجموع R: {'+' if total_r>=0 else ''}{total_r}R\n"
     msg += f"متوسط ربح: +{avg_win}R | متوسط خسارة: {avg_loss}R\n"
+
+    # ===== قسم الاستراتيجيات =====
+    msg += f"{sep}\n📊 أداء كل استراتيجية:\n{sep}\n"
+    msg += _strategy_stats_block(ict_trades, "ICT Classic",   "🔵")
+    msg += _strategy_stats_block(ms_trades,  "Morning Star",  "🌟")
+    msg += _strategy_stats_block(cs_trades,  "CISD",          "🔷")
+
     msg += f"{sep}\n"
     msg += f"🏆 أفضل زوج:  {best_sym}  ({sym_stats[best_sym]:+}R)\n"
     msg += f"💀 أسوأ زوج:  {worst_sym} ({sym_stats[worst_sym]:+}R)\n"
