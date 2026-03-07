@@ -70,6 +70,18 @@ SYMBOLS = {
     "AUDUSD": "AUDUSD=X",
 }
 
+# أزواج SMT للـ CISD
+SMT_PAIRS = {
+    "XAUUSD": ("XAGUSD", "SI=F"),
+    "XAGUSD": ("XAUUSD", "GC=F"),
+    "EURUSD": ("GBPUSD", "GBPUSD=X"),
+    "GBPUSD": ("EURUSD", "EURUSD=X"),
+    "USDCHF": ("USDJPY", "USDJPY=X"),
+    "USDJPY": ("USDCHF", "USDCHF=X"),
+    "AUDUSD": ("EURUSD", "EURUSD=X"),
+    "BTCUSD": ("BTCUSD", "BTC-USD"),  # fallback نفسه
+}
+
 TRADINGVIEW_LINKS = {
     "XAUUSD": "https://www.tradingview.com/chart/?symbol=OANDA%3AXAUUSD",
     "XAGUSD": "https://www.tradingview.com/chart/?symbol=OANDA%3AXAGUSD",
@@ -114,8 +126,7 @@ TRADE_COUNTER  = [0]
 SENT_SETUPS    = {}
 CHAT_ID = int(os.environ.get("CHAT_ID", "0"))
 
-# قائمة انتظار الـ OB — أزواج وصلت DBOS وننتظر السعر يقترب
-OB_WATCHLIST = {}  # key -> {symbol, tf, ob, trend, entry, sl, tp1, tp2, quality, added_at}
+OB_WATCHLIST = {}
 
 DAILY_RISK = {
     "trading_stopped":    False,
@@ -445,10 +456,6 @@ def check_news():
 
 
 def news_comedy_msg(events):
-    """رسالة كوميدية سعودية لأيام الأخبار الكبيرة"""
-    import random
-
-    # نحدد نوع الخبر
     all_titles = " ".join(e["title"] for e in events).upper()
     if "FOMC" in all_titles or "FEDERAL" in all_titles or "FED RATE" in all_titles:
         news_type = "FOMC"
@@ -460,8 +467,6 @@ def news_comedy_msg(events):
         news_type = "خبر"
 
     hours = events[0]["hours"] if events else 0
-    title = events[0]["title"] if events else ""
-
     timing = (
         "بعد شوي!" if hours < 1
         else f"بعد {hours:.0f} ساعة" if hours < 6
@@ -546,12 +551,15 @@ def news_comedy_msg(events):
 
 
 # ============================================================
-# ===== تحليل السوق =====
+# ===== تحليل السوق — دوال مشتركة =====
 # ============================================================
 
 def get_candles(yf_sym, tf, limit=150):
     try:
-        period = {"1h": "10d", "4h": "60d", "1d": "200d", "1wk": "2y"}.get(tf, "60d")
+        period = {
+            "30m": "7d", "1h": "10d", "4h": "60d",
+            "1d": "200d", "1wk": "2y", "1mo": "5y"
+        }.get(tf, "60d")
         df = yf.Ticker(yf_sym).history(period=period, interval=tf)
         df = df.rename(columns={"Open": "open", "High": "high", "Low": "low", "Close": "close"})
         return df.tail(limit)
@@ -700,12 +708,11 @@ def find_ob(df, idm_idx, direction):
     منطق LuxAlgo Order Block:
     Bullish OB: شمعة أدنى low في المنطقة قبل الكسر
     Bearish OB: شمعة أعلى high في المنطقة قبل الكسر
-    - OB zone (للرسم/الستوب) = كامل الشمعة high→low
-    - entry = سقف/قاع الجسم فقط (ICT standard)
+    entry = سقف/قاع الجسم (ICT standard)
+    stop  = كامل الشمعة + بافر
     """
     if idm_idx is None or idm_idx < 3:
         return None
-
     search_start = max(0, idm_idx - 30)
     segment = df.iloc[search_start:idm_idx]
     if len(segment) < 2:
@@ -719,15 +726,14 @@ def find_ob(df, idm_idx, direction):
         if candle_range == 0: return None
         body_ratio = abs(c["close"] - c["open"]) / candle_range
         return {
-            "top":         round(max(c["open"], c["close"]), 5),  # سقف الجسم = entry
-            "bottom":      round(min(c["open"], c["close"]), 5),  # قاع الجسم
+            "top":         round(max(c["open"], c["close"]), 5),
+            "bottom":      round(min(c["open"], c["close"]), 5),
             "index":       ob_idx,
             "body_ratio":  round(body_ratio, 2),
-            "candle_high": round(c["high"], 5),  # للرسم والستوب
+            "candle_high": round(c["high"], 5),
             "candle_low":  round(c["low"],  5),
         }
-
-    else:  # bearish
+    else:
         local_pos  = int(segment["high"].values.argmax())
         ob_idx     = search_start + local_pos
         c          = df.iloc[ob_idx]
@@ -735,11 +741,11 @@ def find_ob(df, idm_idx, direction):
         if candle_range == 0: return None
         body_ratio = abs(c["close"] - c["open"]) / candle_range
         return {
-            "top":         round(max(c["open"], c["close"]), 5),  # قمة الجسم
-            "bottom":      round(min(c["open"], c["close"]), 5),  # قاع الجسم = entry
+            "top":         round(max(c["open"], c["close"]), 5),
+            "bottom":      round(min(c["open"], c["close"]), 5),
             "index":       ob_idx,
             "body_ratio":  round(body_ratio, 2),
-            "candle_high": round(c["high"], 5),  # للرسم والستوب
+            "candle_high": round(c["high"], 5),
             "candle_low":  round(c["low"],  5),
         }
 
@@ -802,7 +808,6 @@ def calc_quality_new(liq_sweep, h4_of, daily_of, has_bsl, has_pdh_pdl,
     if has_lwh_lwl:      score += 10 * w.get("lwh_lwl", 1.0)
     if idm_wick > 0.5:   score += 3  * w.get("idm_wick", 1.0)
     if ob_body > 0.6:    score += 3  * w.get("ob_body",  1.0)
-    # الشهري مو شرط — لو يدعم يضيف نقاط بس، لو عكس ما يلغي شي
     if monthly_match:    score += 5
     return max(0, min(100, round(score)))
 
@@ -846,6 +851,10 @@ def is_trading_allowed():
         return False, "🛑 دخلتِ صفقتين اليوم — حد اليوم وصل"
     return True, ""
 
+
+# ============================================================
+# ===== استراتيجية 1: ICT Classic — DBOS + IDM + OB =====
+# ============================================================
 
 def analyze(sym_name, yf_sym, tf, news, debug=False):
     df = get_candles(yf_sym, tf)
@@ -932,7 +941,6 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
     df_w          = get_candles(yf_sym, "1wk", 20)
     weekly_trend  = detect_trend_structure(df_w) if not df_w.empty else "neutral"
     weekly_match  = weekly_trend == trend
-    # HTF شهري — الصورة الكبيرة
     df_mo         = get_candles(yf_sym, "1mo", 12)
     monthly_trend = detect_trend_structure(df_mo) if not df_mo.empty else "neutral"
     monthly_match = monthly_trend == trend or monthly_trend == "neutral"
@@ -976,16 +984,13 @@ def analyze(sym_name, yf_sym, tf, news, debug=False):
 
 
 # ============================================================
-# ===== Morning Star =====
+# ===== استراتيجية 2: Morning Star — مُصلَّح ✅ =====
 # ============================================================
 
 def detect_morning_star(df, direction, lookback=30):
     """
-    Morning Star Pattern مع سحب سيولة إلزامي قبل النمط
-    c1 = شمعة عكسية كبيرة (جسم > 50%)
-    c2 = شمعة صغيرة جداً (تردد)
-    c3 = شمعة في الاتجاه قوية تغلق فوق/تحت منتصف c1
-    يجب وجود سحب سيولة قبل c1
+    Morning Star مع سحب سيولة إلزامي — مُصلَّح
+    الإصلاح: ref_low/high يؤخذ من منطقة بعيدة، والسحب يُفحص في منطقة قريبة منفصلة
     """
     if len(df) < lookback + 6:
         return None
@@ -1014,15 +1019,21 @@ def detect_morning_star(df, direction, lookback=30):
             if c2["low"] < c1["low"] * 0.999: continue
             c1_mid = (c1["open"] + c1["close"]) / 2
             if not (c3["close"] > c3["open"] and c3["close"] > c1_mid and c3_body_ratio > 0.45): continue
-            # سحب سيولة إلزامي قبل c1
-            pre_c1   = search.iloc[max(0, i-12):i-2]
-            if len(pre_c1) < 3: continue
-            ref_low  = pre_c1["low"].min()
+
+            # ===== سحب السيولة مُصلَّح =====
+            # المرجع: من منطقة بعيدة (قبل c1 بـ 5+ شمعات)
+            ref_area   = search.iloc[max(0, i-12) : max(0, i-5)]
+            # الفحص: في المنطقة القريبة (قبل c1 مباشرة)
+            check_area = search.iloc[max(0, i-5)  : i-2]
+            if len(ref_area) < 2 or len(check_area) < 1: continue
+            ref_low   = ref_area["low"].min()
             has_sweep = any(
-                pre_c1.iloc[j]["low"] < ref_low and pre_c1.iloc[j]["close"] > ref_low
-                for j in range(len(pre_c1))
+                check_area.iloc[j]["low"] < ref_low and
+                check_area.iloc[j]["close"] > ref_low
+                for j in range(len(check_area))
             )
             if not has_sweep: continue
+
             current = df["close"].iloc[-1]
             if current < c3["close"] * 0.997: continue
             return {
@@ -1041,14 +1052,19 @@ def detect_morning_star(df, direction, lookback=30):
             if c2["high"] > c1["high"] * 1.001: continue
             c1_mid = (c1["open"] + c1["close"]) / 2
             if not (c3["close"] < c3["open"] and c3["close"] < c1_mid and c3_body_ratio > 0.45): continue
-            pre_c1    = search.iloc[max(0, i-12):i-2]
-            if len(pre_c1) < 3: continue
-            ref_high  = pre_c1["high"].max()
+
+            # ===== سحب السيولة مُصلَّح =====
+            ref_area   = search.iloc[max(0, i-12) : max(0, i-5)]
+            check_area = search.iloc[max(0, i-5)  : i-2]
+            if len(ref_area) < 2 or len(check_area) < 1: continue
+            ref_high  = ref_area["high"].max()
             has_sweep = any(
-                pre_c1.iloc[j]["high"] > ref_high and pre_c1.iloc[j]["close"] < ref_high
-                for j in range(len(pre_c1))
+                check_area.iloc[j]["high"] > ref_high and
+                check_area.iloc[j]["close"] < ref_high
+                for j in range(len(check_area))
             )
             if not has_sweep: continue
+
             current = df["close"].iloc[-1]
             if current > c3["close"] * 1.003: continue
             return {
@@ -1130,8 +1146,300 @@ def analyze_morning_star(sym_name, yf_sym, tf, news, debug=False):
 
 
 # ============================================================
+# ===== استراتيجية 3: CISD — Sweep + SMT + CISD =====
+# ============================================================
+
+def cisd_get_levels(yf_sym, df):
+    """يجمع مستويات السيولة المهمة: PDH/PDL, LWH/LWL, BSL/SSL"""
+    levels = []
+    try:
+        pdh, pdl = get_pdh_pdl(yf_sym)
+        if pdh: levels.append(("PDH", pdh))
+        if pdl: levels.append(("PDL", pdl))
+        lwh, lwl = get_lwh_lwl(yf_sym)
+        if lwh: levels.append(("LWH", lwh))
+        if lwl: levels.append(("LWL", lwl))
+        if len(df) >= 50:
+            recent = df.tail(50)
+            levels.append(("BSL", round(recent["high"].max(), 5)))
+            levels.append(("SSL", round(recent["low"].min(), 5)))
+    except:
+        pass
+    return levels
+
+
+def cisd_detect_sweep(df, levels, direction, lookback=8):
+    """
+    يكشف سحب سيولة من مستوى مهم في آخر lookback شمعة
+    Bullish → سحب تحت SSL/PDL/LWL ثم إغلاق فوقه
+    Bearish → سحب فوق BSL/PDH/LWH ثم إغلاق تحته
+    """
+    if len(df) < lookback + 2:
+        return False, None
+
+    recent = df.tail(lookback)
+
+    if direction == "bullish":
+        targets = [v for name, v in levels if name in ("SSL", "PDL", "LWL")]
+        for ref in targets:
+            for i in range(len(recent)):
+                c = recent.iloc[i]
+                if c["low"] < ref and c["close"] > ref:
+                    return True, round(ref, 5)
+
+    else:
+        targets = [v for name, v in levels if name in ("BSL", "PDH", "LWH")]
+        for ref in targets:
+            for i in range(len(recent)):
+                c = recent.iloc[i]
+                if c["high"] > ref and c["close"] < ref:
+                    return True, round(ref, 5)
+
+    return False, None
+
+
+def cisd_detect_smt(df_main, df_corr, direction, lookback=10):
+    """
+    SMT Divergence بين زوجين مرتبطين:
+    Bullish SMT: الأصلي يعمل Low جديد، المقابل لا يعمله
+    Bearish SMT: الأصلي يعمل High جديد، المقابل لا يعمله
+    """
+    if df_main.empty or df_corr.empty:
+        return False
+
+    n = min(lookback, len(df_main), len(df_corr))
+    if n < 4:
+        return False
+
+    m = df_main.tail(n)
+    c = df_corr.tail(n)
+
+    if direction == "bullish":
+        main_low_last = m["low"].iloc[-1]
+        main_low_prev = m["low"].iloc[:-1].min()
+        corr_low_last = c["low"].iloc[-1]
+        corr_low_prev = c["low"].iloc[:-1].min()
+        # الأصلي عمل low جديد، المقابل لم يعمله
+        return (main_low_last < main_low_prev * 0.9999 and
+                corr_low_last >= corr_low_prev * 0.9998)
+    else:
+        main_high_last = m["high"].iloc[-1]
+        main_high_prev = m["high"].iloc[:-1].max()
+        corr_high_last = c["high"].iloc[-1]
+        corr_high_prev = c["high"].iloc[:-1].max()
+        return (main_high_last > main_high_prev * 1.0001 and
+                corr_high_last <= corr_high_prev * 1.0002)
+
+
+def cisd_detect_change(df, direction, lookback=6):
+    """
+    CISD — Change In State of Delivery:
+    Bullish: شمعة هابطة ثم شمعة جسمها يغلق فوق open الشمعة الهابطة
+    Bearish: شمعة صاعدة ثم شمعة جسمها يغلق تحت open الشمعة الصاعدة
+    الشرط: الجسم فقط (بدون حساب الويك)
+    """
+    if len(df) < lookback + 2:
+        return None
+
+    recent = df.tail(lookback + 2)
+
+    for i in range(1, len(recent)):
+        c_prev = recent.iloc[i - 1]
+        c_curr = recent.iloc[i]
+
+        if direction == "bullish":
+            if c_prev["close"] >= c_prev["open"]: continue  # يجب أن تكون هابطة
+            prev_open     = c_prev["open"]
+            curr_body_top = max(c_curr["open"], c_curr["close"])
+            if curr_body_top > prev_open:
+                return {
+                    "candle_open":  round(c_prev["open"],  5),
+                    "candle_close": round(c_prev["close"], 5),
+                    "confirm_price": round(curr_body_top,  5),
+                }
+        else:
+            if c_prev["close"] <= c_prev["open"]: continue  # يجب أن تكون صاعدة
+            prev_open        = c_prev["open"]
+            curr_body_bottom = min(c_curr["open"], c_curr["close"])
+            if curr_body_bottom < prev_open:
+                return {
+                    "candle_open":  round(c_prev["open"],  5),
+                    "candle_close": round(c_prev["close"], 5),
+                    "confirm_price": round(curr_body_bottom, 5),
+                }
+    return None
+
+
+def analyze_cisd(sym_name, yf_sym, tf, news, debug=False):
+    """
+    استراتيجية CISD الكاملة:
+    1. H4 يحدد الاتجاه
+    2. سحب من مستوى مهم (PDH/PDL/LWH/LWL/BSL/SSL)
+    3. SMT Divergence مع الزوج المقابل
+    4. CISD — إغلاق جسم يكسر open الشمعة العكسية
+    جودة: 60 base + BSL(15) + H4 OF(15/8) = max 90
+    """
+    if news.get("hard_block"):
+        if debug: return f"{sym_name} {tf} 🔷: ❌ أخبار CPI/NFP/FOMC"
+        return None
+
+    df = get_candles(yf_sym, tf)
+    if df.empty or len(df) < 50:
+        if debug: return f"{sym_name} {tf} 🔷: ❌ بيانات فاضية"
+        return None
+
+    # ── خطوة 1: الاتجاه من H4 ──
+    df_h4    = get_candles(yf_sym, "4h", 50)
+    h4_trend = detect_trend_structure(df_h4) if not df_h4.empty else "neutral"
+    if h4_trend == "neutral":
+        if debug: return f"{sym_name} {tf} 🔷: ❌ H4 محايد — لا اتجاه"
+        return None
+
+    # ── خطوة 2: Sweep من مستوى مهم ──
+    levels = cisd_get_levels(yf_sym, df)
+    if not levels:
+        if debug: return f"{sym_name} {tf} 🔷: ❌ ما في مستويات"
+        return None
+
+    swept, sweep_level = cisd_detect_sweep(df, levels, h4_trend)
+    if not swept:
+        if debug: return f"{sym_name} {tf} 🔷: ❌ ما في Sweep من مستوى مهم"
+        return None
+
+    # ── خطوة 3: SMT ──
+    smt_info = SMT_PAIRS.get(sym_name)
+    has_smt  = False
+    if smt_info:
+        corr_name, corr_yf = smt_info
+        if corr_yf != yf_sym:  # نتجنب مقارنة الزوج بنفسه
+            df_corr = get_candles(corr_yf, tf, 30)
+            if not df_corr.empty:
+                has_smt = cisd_detect_smt(df, df_corr, h4_trend)
+
+    if not has_smt:
+        if debug: return f"{sym_name} {tf} 🔷: ❌ ما في SMT Divergence"
+        return None
+
+    # ── خطوة 4: CISD ──
+    cisd = cisd_detect_change(df, h4_trend)
+    if not cisd:
+        if debug: return f"{sym_name} {tf} 🔷: ❌ ما تشكّل CISD بعد"
+        return None
+
+    current = df["close"].iloc[-1]
+    entry   = cisd["confirm_price"]
+
+    # الستوب: تحت/فوق منطقة السحب مع بافر 0.1%
+    if h4_trend == "bullish":
+        sl = round(df.tail(10)["low"].min() * (1 - 0.001), 5)
+    else:
+        sl = round(df.tail(10)["high"].max() * (1 + 0.001), 5)
+
+    risk = abs(entry - sl)
+    if risk <= 0:
+        if debug: return f"{sym_name} {tf} 🔷: ❌ حجم الريسك صفر"
+        return None
+
+    # الهدف: أقرب مستوى مهم بشرط 2R، وإلا 2R ثابت
+    tp1      = None
+    tp_label = "2R"
+    for name, val in sorted(levels, key=lambda x: abs(x[1] - entry)):
+        if h4_trend == "bullish" and val > entry:
+            rr = (val - entry) / risk
+            if rr >= 2.0:
+                tp1      = round(val, 5)
+                tp_label = f"{name} ({round(rr,1)}R)"
+                break
+        elif h4_trend == "bearish" and val < entry:
+            rr = (entry - val) / risk
+            if rr >= 2.0:
+                tp1      = round(val, 5)
+                tp_label = f"{name} ({round(rr,1)}R)"
+                break
+
+    if tp1 is None:
+        tp1 = round(entry + risk * 2.0, 5) if h4_trend == "bullish" else round(entry - risk * 2.0, 5)
+
+    # جودة
+    has_bsl, bsl_level = check_bsl_ssl(df, h4_trend)
+    h4_of = detect_order_flow(df_h4, h4_trend) if not df_h4.empty else 0.0
+    quality = 60  # base: Sweep + SMT + CISD كلها اكتملت
+    if has_bsl:        quality += 15
+    if h4_of >= 0.6:   quality += 15
+    elif h4_of >= 0.4: quality += 8
+    quality = max(0, min(100, quality))
+
+    if quality < 70:
+        if debug: return f"{sym_name} {tf} 🔷: ❌ جودة {quality}%"
+        return None
+
+    return {
+        "symbol":       sym_name,
+        "tf":           tf,
+        "trend":        h4_trend,
+        "strategy":     "cisd",
+        "current":      round(current, 5),
+        "entry":        entry,
+        "sl":           sl,
+        "tp1":          tp1,
+        "tp2":          tp1,   # CISD هدف واحد
+        "tp_label":     tp_label,
+        "sweep_level":  sweep_level,
+        "cisd":         cisd,
+        "has_smt":      has_smt,
+        "has_bsl":      has_bsl,
+        "bsl_level":    bsl_level,
+        "h4_of":        h4_of,
+        "quality":      quality,
+        "news":         news,
+        "liq_sweep":    True,
+        "has_pdh_pdl":  False,
+        "has_lwh_lwl":  False,
+        "weekly_match": False,
+        "ob": {
+            "top":         max(entry, sl),
+            "bottom":      min(entry, sl),
+            "candle_high": max(entry, sl),
+            "candle_low":  min(entry, sl),
+        },
+        "in_ob":      False,
+        "daily_of":   0,
+        "idm_type":   "",
+        "idm_wick":   0,
+        "daily_trend": h4_trend,
+    }
+
+
+# ============================================================
 # ===== رسائل السيتاب =====
 # ============================================================
+
+def cisd_setup_msg(a):
+    direction   = "شراء 📈" if a["trend"] == "bullish" else "بيع 📉"
+    risk, label = get_risk_new(a["quality"])
+    risk_txt    = f"❌ ما ندخل — {label}" if risk == 0 else f"💰 مخاطرة: {risk}% — {label}"
+    tv          = TRADINGVIEW_LINKS.get(a["symbol"], "https://www.tradingview.com")
+    quality_bar = "█" * (a["quality"] // 20) + "░" * (5 - a["quality"] // 20)
+    sep = "─────────────────"
+    msg  = f"🔷 CISD | {direction} | {a['symbol']} | {a['tf']}\n{sep}\n"
+    msg += f"✅ Sweep من مستوى مهم عند: {a.get('sweep_level', '')}\n"
+    msg += f"✅ SMT Divergence مؤكد\n"
+    msg += f"✅ CISD — كسر الـ Open بالجسم\n"
+    if a.get("has_bsl"):
+        msg += f"💧 BSL/SSL عند: {a.get('bsl_level', '')}\n"
+    if a.get("h4_of", 0) >= 0.6:
+        msg += f"✅ H4 Order Flow يدعم ({a['h4_of']})\n"
+    msg += f"{sep}\n"
+    msg += f"⚡ ادخلي الحين — CISD اكتمل!\n"
+    msg += f"📌 دخول Market عند: {a['entry']}\n"
+    msg += f"🛑 ستوب: {a['sl']}\n"
+    msg += f"🎯 هدف: {a['tp1']}  ({a.get('tp_label', '2R')})\n"
+    msg += f"السعر الحالي: {round(a['current'], 4)}\n"
+    msg += f"{sep}\n"
+    msg += f"جودة: {a['quality']}/100  {quality_bar}\n"
+    msg += f"{risk_txt}\n📈 {tv}\nالقرار إلك 💪"
+    return msg
+
 
 def morning_star_msg(a):
     direction   = "شراء 📈" if a["trend"] == "bullish" else "بيع 📉"
@@ -1247,9 +1555,14 @@ async def send_setup_with_buttons(bot, a, custom_msg=None):
         InlineKeyboardButton("✅ دخلت",    callback_data=f"entered_{trade_id}"),
         InlineKeyboardButton("❌ ما دخلت", callback_data=f"skipped_{trade_id}"),
     ]])
-    msg_text = custom_msg if custom_msg else (
-        morning_star_msg(a) if a.get("strategy") == "morning_star" else setup_msg(a)
-    )
+    if custom_msg:
+        msg_text = custom_msg
+    elif a.get("strategy") == "cisd":
+        msg_text = cisd_setup_msg(a)
+    elif a.get("strategy") == "morning_star":
+        msg_text = morning_star_msg(a)
+    else:
+        msg_text = setup_msg(a)
     await bot.send_message(chat_id=CHAT_ID, text=msg_text, reply_markup=keyboard)
 
 
@@ -1327,14 +1640,12 @@ async def handle_callback(update, context):
 # ===== مراقبة الصفقات =====
 # ============================================================
 
-# تتبع التنبيهات عشان ما يكرر نفس الرسالة
-OB_ALERTS_SENT   = set()   # trade_id اللي تم تنبيه OB قربها
-TP1_TRAIL_SENT   = set()   # trade_id اللي تم إرسال تذكير Trailing
+OB_ALERTS_SENT = set()
+TP1_TRAIL_SENT = set()
 
 async def monitor_trades(bot):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-    # ===== 1. مراقبة الصفقات المفتوحة =====
     active = {k: v for k, v in JOURNAL.items() if v["status"] == "active"}
     for trade_id, t in active.items():
         try:
@@ -1352,9 +1663,7 @@ async def monitor_trades(bot):
             if hit_tp2:
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ أكدي TP2", callback_data=f"result_{trade_id}_tp2")]])
                 await bot.send_message(chat_id=CHAT_ID, text=f"🚀 يبدو وصل هدف 2 على {t['symbol']}!", reply_markup=kb)
-
             elif hit_tp1:
-                # Trailing Stop تذكير — مرة وحدة فقط
                 if trade_id not in TP1_TRAIL_SENT:
                     TP1_TRAIL_SENT.add(trade_id)
                     trail_sl = round(t["entry"], 5)
@@ -1375,7 +1684,6 @@ async def monitor_trades(bot):
                     InlineKeyboardButton("🚀 TP2", callback_data=f"result_{trade_id}_tp2"),
                 ]])
                 await bot.send_message(chat_id=CHAT_ID, text=f"وين أغلقتِ {t['symbol']}؟", reply_markup=kb)
-
             elif hit_sl:
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔴 أكدي الستوب", callback_data=f"result_{trade_id}_sl")]])
                 await bot.send_message(chat_id=CHAT_ID, text=f"⚠️ يبدو لمس الستوب على {t['symbol']}!", reply_markup=kb)
@@ -1383,7 +1691,6 @@ async def monitor_trades(bot):
         except Exception as e:
             logger.error(f"خطأ مراقبة {trade_id}: {e}")
 
-    # ===== 2. تتبع السعر من OB للصفقات الـ pending =====
     pending = {k: v for k, v in JOURNAL.items() if v["status"] == "pending"}
     for trade_id, t in pending.items():
         try:
@@ -1398,16 +1705,12 @@ async def monitor_trades(bot):
             ob_top    = t.get("analysis", {}).get("ob", {}).get("top", entry)
             ob_bottom = t.get("analysis", {}).get("ob", {}).get("bottom", entry)
             ob_range  = ob_top - ob_bottom if ob_top and ob_bottom else 0
-
             if ob_range <= 0: continue
-
-            # السعر اقترب من OB بـ 20% من حجمه
             proximity = ob_range * 0.20
             near_ob = (
                 (direction == "bullish" and ob_bottom - proximity <= current <= ob_top + proximity) or
                 (direction == "bearish" and ob_bottom - proximity <= current <= ob_top + proximity)
             )
-
             if near_ob:
                 OB_ALERTS_SENT.add(trade_id)
                 arrow = "📈" if direction == "bullish" else "📉"
@@ -1442,6 +1745,7 @@ async def scan_markets(bot):
     now_ts    = datetime.now(RIYADH_TZ)
     today_str = now_ts.strftime("%Y-%m-%d")
 
+    # ── ICT Classic ──
     for name, yf_sym in SYMBOLS.items():
         for tf in ["4h", "1h"]:
             key = f"{name}_{tf}"
@@ -1454,6 +1758,7 @@ async def scan_markets(bot):
             except Exception as e:
                 logger.error(f"خطأ {name} {tf}: {e}")
 
+    # ── Morning Star ──
     for name, yf_sym in SYMBOLS.items():
         for tf in ["4h", "1h"]:
             key = f"ms_{name}_{tf}"
@@ -1465,6 +1770,19 @@ async def scan_markets(bot):
                     found.append(r)
             except Exception as e:
                 logger.error(f"خطأ MS {name} {tf}: {e}")
+
+    # ── CISD ──
+    for name, yf_sym in SYMBOLS.items():
+        for tf in ["1h", "30m"]:
+            key = f"cisd_{name}_{tf}"
+            if SENT_SETUPS.get(key) == today_str: continue
+            try:
+                r = analyze_cisd(name, yf_sym, tf, news)
+                if r:
+                    r["_sent_key"] = key
+                    found.append(r)
+            except Exception as e:
+                logger.error(f"خطأ CISD {name} {tf}: {e}")
 
     if found:
         found.sort(key=lambda x: x["quality"], reverse=True)
@@ -1484,7 +1802,6 @@ async def _background_scan(bot):
 
 
 async def _market_status_report(bot):
-    """تقرير السوق كل ساعتين — وش يشوف البوت فعلاً"""
     try:
         now  = datetime.now(RIYADH_TZ)
         news = check_news()
@@ -1498,35 +1815,20 @@ async def _market_status_report(bot):
             )
             return
 
-        STATUS_ICONS = {
-            "محايد":        "⚫",
-            "DBOS":         "🟡",
-            "IDM":          "🟠",
-            "OB":           "🔵",
-            "جودة":         "🟢",
-            "order flow":   "🔴",
-            "عكس":          "🔴",
-            "بيانات":       "⚪",
-        }
-
-        lines   = []
+        lines       = []
         found_setup = False
 
         for name, yf_sym in SYMBOLS.items():
-            # نجرب 4h أول ثم 1h ونأخذ أفضل نتيجة
             best_line  = None
-            best_stage = 0  # كلما أعلى كلما وصل أبعد في التحليل
-
+            best_stage = 0
             for tf in ["4h", "1h"]:
                 r = analyze(name, yf_sym, tf, news, debug=True)
                 if isinstance(r, dict):
-                    # سيتاب كامل!
                     best_line  = f"🟢 {name} {tf}: سيتاب! جودة {r['quality']}% 🔥"
                     best_stage = 99
                     found_setup = True
                     break
                 elif isinstance(r, str):
-                    # نحدد المرحلة اللي وصلها
                     stage = (6 if "جودة" in r
                              else 5 if "OB" in r and "ما في" not in r
                              else 4 if "IDM" in r and "ما في" not in r
@@ -1535,15 +1837,9 @@ async def _market_status_report(bot):
                              else 1)
                     if stage > best_stage:
                         best_stage = stage
-                        # أيقونة بناء على المرحلة
-                        icon = ("🔵" if stage >= 4
-                                else "🟡" if stage == 3
-                                else "🔴" if stage == 2
-                                else "⚫")
-                        # نظّف النص
+                        icon  = ("🔵" if stage >= 4 else "🟡" if stage == 3 else "🔴" if stage == 2 else "⚫")
                         clean = r.split(": ", 1)[-1] if ": " in r else r
                         best_line = f"{icon} {name}: {clean}"
-
             if best_line:
                 lines.append(best_line)
 
@@ -1575,27 +1871,21 @@ async def _market_status_report(bot):
 # ============================================================
 
 def personal_stats_msg():
-    """إحصائيات شخصية مفصلة من الجورنال"""
     closed = [t for t in JOURNAL.values() if t["status"] == "closed" and t.get("result_r") is not None]
     if len(closed) < 3:
         return "ما في بيانات كافية بعد 📊\nادخلي على الأقل 3 صفقات مغلقة وأعطيك إحصائياتك 💪"
-
     wins     = [t for t in closed if t["result_r"] > 0]
     losses   = [t for t in closed if t["result_r"] < 0]
     total_r  = round(sum(t["result_r"] for t in closed), 1)
     win_rate = round(len(wins)/len(closed)*100)
     avg_win  = round(sum(t["result_r"] for t in wins)/len(wins), 2)   if wins   else 0
     avg_loss = round(sum(t["result_r"] for t in losses)/len(losses), 2) if losses else 0
-
-    # أفضل/أسوأ زوج
     by_symbol = {}
     for t in closed:
         by_symbol.setdefault(t["symbol"], []).append(t["result_r"])
     sym_stats = {s: round(sum(v),1) for s,v in by_symbol.items()}
     best_sym  = max(sym_stats, key=sym_stats.get)
     worst_sym = min(sym_stats, key=sym_stats.get)
-
-    # أفضل/أسوأ يوم
     days_ar = {0:"الاثنين",1:"الثلاثاء",2:"الأربعاء",3:"الخميس",4:"الجمعة",5:"السبت",6:"الأحد"}
     by_day  = {}
     for t in closed:
@@ -1606,18 +1896,13 @@ def personal_stats_msg():
     day_stats = {d: round(sum(v),1) for d,v in by_day.items()}
     best_day  = max(day_stats, key=day_stats.get) if day_stats else "-"
     worst_day = min(day_stats, key=day_stats.get) if day_stats else "-"
-
-    # أفضل تايم فريم
     by_tf   = {}
     for t in closed:
         by_tf.setdefault(t.get("tf","?"), []).append(t["result_r"])
     tf_stats = {tf: round(sum(v)/len(v),2) for tf,v in by_tf.items()}
     best_tf  = max(tf_stats, key=tf_stats.get) if tf_stats else "-"
-
-    # متوسط جودة رابحة vs خاسرة
     avg_q_win  = round(sum(t.get("quality",0) for t in wins)/len(wins))   if wins   else 0
     avg_q_loss = round(sum(t.get("quality",0) for t in losses)/len(losses)) if losses else 0
-
     sep = "─────────────────"
     msg  = f"📈 إحصائياتك الشخصية\n{sep}\n"
     msg += f"إجمالي: {len(closed)} | ✅{len(wins)} ربح | 🔴{len(losses)} خسارة\n"
@@ -1710,7 +1995,6 @@ def challenge_progress_msg():
 
 
 def week_report_msg():
-    """تقرير الأسبوع الحالي مرتب بالأيام"""
     days_ar = {0:"الاثنين",1:"الثلاثاء",2:"الأربعاء",3:"الخميس",4:"الجمعة",5:"السبت",6:"الأحد"}
     by_day  = {}
     for t in JOURNAL.values():
@@ -1720,14 +2004,12 @@ def week_report_msg():
         except:
             day_name = ts[:10] if ts else "غير محدد"
         by_day.setdefault(day_name, []).append(t)
-
     closed  = [t for t in JOURNAL.values() if t["status"] == "closed"]
     active  = [t for t in JOURNAL.values() if t["status"] == "active"]
     wins    = [t for t in closed if (t.get("result_r") or 0) > 0]
     losses  = [t for t in closed if (t.get("result_r") or 0) < 0]
     total_r = round(sum(t["result_r"] for t in closed if t.get("result_r")), 1) if closed else 0
     win_rate= round(len(wins)/len(closed)*100) if closed else 0
-
     msg = "📅 تقرير الأسبوع الحالي\n─────────────────\n"
     if not JOURNAL:
         msg += "ما في صفقات هالأسبوع بعد 📋\n"
@@ -1747,7 +2029,6 @@ def week_report_msg():
         msg += f"إجمالي: {len(closed)} | ✅{len(wins)} | 🔴{len(losses)}\n"
         if closed: msg += f"نسبة الفوز: {win_rate}% | مجموع: {'+' if total_r>=0 else ''}{total_r}R\n"
         if active: msg += f"⏳ مفتوحة: {len(active)}\n"
-
     dd_used   = ACCOUNT["drawdown_used"]
     remaining = ACCOUNT["max_drawdown"] - dd_used
     msg += f"📉 دروداون مستخدم: {dd_used}% | باقي: {remaining:.1f}%\n─────────────────\n"
@@ -1761,7 +2042,6 @@ def week_report_msg():
 
 
 def weekly_report_msg():
-    """تقرير نهاية الأسبوع — يُرسل تلقائياً الجمعة ويصفّر الجورنال"""
     closed  = [t for t in JOURNAL.values() if t["status"] == "closed"]
     skipped = [t for t in JOURNAL.values() if t["status"] == "skipped"]
     active  = [t for t in JOURNAL.values() if t["status"] == "active"]
@@ -1809,7 +2089,7 @@ async def start_cmd(update, context):
             f"/week     تقرير الأسبوع\n"
             f"/stats    إحصائياتك الشخصية\n"
             f"/update   تحديث الحساب\n"
-            f"/debug    تشخيص السوق"
+            f"/debug    تشخيص السوق (3 استراتيجيات)"
         )
 
 async def scan_cmd(update, context):
@@ -1846,29 +2126,55 @@ async def week_cmd(update, context):
 async def journal_cmd(update, context):
     await update.message.reply_text(weekly_report_msg())
 
+
 async def debug_cmd(update, context):
+    """تشخيص السوق — 3 استراتيجيات كاملة"""
     news = check_news()
-    msg  = "🔵 DBOS + IDM + OB:\n─────────────────\n"
+
+    # ── قسم 1: ICT Classic ──
+    msg  = "🔵 ICT Classic — DBOS + IDM + OB:\n─────────────────\n"
     for name, yf_sym in SYMBOLS.items():
         for tf in ["4h", "1h"]:
             try:
                 r = analyze(name, yf_sym, tf, news, debug=True)
-                if isinstance(r, str):   msg += f"{r}\n"
-                elif isinstance(r, dict):msg += f"✅ {name} {tf}: جودة {r['quality']}%\n"
-                else:                    msg += f"❌ {name} {tf}: ما في سيتاب\n"
+                if isinstance(r, str):    msg += f"{r}\n"
+                elif isinstance(r, dict): msg += f"✅ {name} {tf}: جودة {r['quality']}%\n"
+                else:                     msg += f"❌ {name} {tf}: ما في سيتاب\n"
             except Exception as e:
                 msg += f"⚠️ {name} {tf}: {str(e)[:40]}\n"
+
+    # ── قسم 2: Morning Star ──
     msg += "\n🌟 Morning Star:\n─────────────────\n"
     for name, yf_sym in SYMBOLS.items():
         for tf in ["4h", "1h"]:
             try:
                 r = analyze_morning_star(name, yf_sym, tf, news, debug=True)
-                if isinstance(r, str):   msg += f"{r}\n"
-                elif isinstance(r, dict):msg += f"✅ {name} {tf} 🌟: جودة {r['quality']}%\n"
-                else:                    msg += f"❌ {name} {tf} 🌟: ما في نمط\n"
+                if isinstance(r, str):    msg += f"{r}\n"
+                elif isinstance(r, dict): msg += f"✅ {name} {tf} 🌟: جودة {r['quality']}%\n"
+                else:                     msg += f"❌ {name} {tf} 🌟: ما في نمط\n"
             except Exception as e:
                 msg += f"⚠️ {name} {tf} 🌟: {str(e)[:40]}\n"
-    await update.message.reply_text(msg)
+
+    # ── قسم 3: CISD ──
+    msg += "\n🔷 CISD — Sweep + SMT + CISD:\n─────────────────\n"
+    for name, yf_sym in SYMBOLS.items():
+        for tf in ["1h", "30m"]:
+            try:
+                r = analyze_cisd(name, yf_sym, tf, news, debug=True)
+                if isinstance(r, str):    msg += f"{r}\n"
+                elif isinstance(r, dict): msg += f"✅ {name} {tf} 🔷: جودة {r['quality']}%\n"
+                else:                     msg += f"❌ {name} {tf} 🔷: ما في سيتاب\n"
+            except Exception as e:
+                msg += f"⚠️ {name} {tf} 🔷: {str(e)[:40]}\n"
+
+    # تيليجرام يقبل 4096 حرف كحد أقصى
+    if len(msg) <= 4096:
+        await update.message.reply_text(msg)
+    else:
+        parts = [msg[i:i+4000] for i in range(0, len(msg), 4000)]
+        for part in parts:
+            await update.message.reply_text(part)
+            await asyncio.sleep(0.3)
 
 
 # ============================================================
@@ -1886,7 +2192,8 @@ async def trading_loop(bot):
         "/status   حالة الحساب\n"
         "/week     تقرير الأسبوع\n"
         "/stats    إحصائياتك الشخصية\n"
-        "/update   تحديث الحساب"
+        "/update   تحديث الحساب\n"
+        "/debug    تشخيص (3 استراتيجيات)"
     )
     if ACCOUNT.get("setup_done") and ACCOUNT.get("firm_name"):
         phase_label   = {"challenge":"Challenge 🔴","verification":"Verification 🟡","funded":"Funded 🟢"}.get(ACCOUNT["phase"],"")
@@ -1926,7 +2233,7 @@ async def trading_loop(bot):
             today     = now.date()
             today_str = today.strftime("%Y-%m-%d")
 
-            # ===== صباح جديد =====
+            # صباح جديد
             if now.hour == 8 and now.minute < 5 and last_advice_day != today:
                 ACCOUNT["daily_used"]    = 0.0
                 ACCOUNT["trades_today"]  = 0
@@ -1936,19 +2243,18 @@ async def trading_loop(bot):
                 await bot.send_message(chat_id=CHAT_ID, text=daily_advice_msg())
                 await asyncio.sleep(1)
                 await bot.send_message(chat_id=CHAT_ID, text=challenge_progress_msg())
-                # لو في أخبار كبيرة اليوم — نرسل رسالة كوميدية
                 morning_news = check_news()
                 if morning_news.get("hard_block") and morning_news.get("events"):
                     await asyncio.sleep(2)
                     await bot.send_message(chat_id=CHAT_ID, text=news_comedy_msg(morning_news["events"]))
                 last_advice_day = today
 
-            # ===== تقرير الأسبوع — الجمعة من 8 مساءً =====
+            # تقرير الأسبوع الجمعة 8 مساءً
             if now.weekday() == 4 and now.hour >= 20 and last_report_day != today:
                 await bot.send_message(chat_id=CHAT_ID, text=weekly_report_msg())
                 last_report_day = today
 
-            # ===== تحذير صفقتين — كل 4 ساعات =====
+            # تحذير صفقتين
             if DAILY_RISK["trades_entered_today"] >= 2:
                 if now.hour != last_warn_hour and now.hour % 4 == 0:
                     await bot.send_message(
@@ -1957,13 +2263,13 @@ async def trading_loop(bot):
                     )
                     last_warn_hour = now.hour
 
-            # ===== تقرير السوق كل ساعتين =====
+            # تقرير السوق كل ساعتين
             if now.hour % 2 == 0 and now.minute < 2:
                 if not hasattr(trading_loop, 'last_mkt_report') or trading_loop.last_mkt_report != now.hour:
                     asyncio.create_task(_market_status_report(bot))
                     trading_loop.last_mkt_report = now.hour
 
-            # ===== سكان تلقائي كل 30 دقيقة =====
+            # سكان تلقائي كل 30 دقيقة
             current_slot = now.hour * 2 + (1 if now.minute >= 30 else 0)
             if current_slot != last_scan_slot:
                 last_scan_slot = current_slot
