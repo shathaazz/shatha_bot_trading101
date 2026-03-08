@@ -1414,6 +1414,50 @@ def analyze_cisd(sym_name, yf_sym, tf, news, debug=False):
 # ===== رسائل السيتاب =====
 # ============================================================
 
+def get_session_info():
+    """
+    يرجع اسم الجلسة الحالية بتوقيت الرياض (UTC+3)
+    مبني على أوقات LuxAlgo Sessions
+    نيويورك: 13:00-22:00 UTC = 16:00-01:00 الرياض
+    لندن:    07:00-16:00 UTC = 10:00-19:00 الرياض
+    طوكيو:   00:00-09:00 UTC = 03:00-12:00 الرياض
+    سيدني:   21:00-06:00 UTC = 00:00-09:00 الرياض
+    """
+    now_riyadh = datetime.now(RIYADH_TZ)
+    h = now_riyadh.hour
+    m = now_riyadh.minute
+    t = h * 60 + m  # الوقت بالدقائق
+
+    sessions = []
+
+    # سيدني:  00:00 - 09:00
+    if 0 <= t < 540:
+        sessions.append(("سيدني", "🟡"))
+
+    # طوكيو: 03:00 - 12:00
+    if 180 <= t < 720:
+        sessions.append(("طوكيو", "🌸"))
+
+    # لندن:  10:00 - 19:00
+    if 600 <= t < 1140:
+        sessions.append(("لندن", "🔵"))
+
+    # نيويورك: 16:00 - 01:00 (اليوم التالي)
+    if t >= 960 or t < 60:
+        sessions.append(("نيويورك", "🗽"))
+
+    if not sessions:
+        return "⚫ بين الجلسات"
+
+    # لو أكثر من جلسة = تداخل
+    if len(sessions) >= 2:
+        names  = " + ".join(s[0] for s in sessions)
+        emoji  = "⚡"
+        return f"{emoji} تداخل: {names} (أقوى وقت!)"
+
+    return f"{sessions[0][1]} جلسة {sessions[0][0]}"
+
+
 def cisd_setup_msg(a):
     direction   = "شراء 📈" if a["trend"] == "bullish" else "بيع 📉"
     risk, label = get_risk_new(a["quality"])
@@ -1430,6 +1474,7 @@ def cisd_setup_msg(a):
     if a.get("h4_of", 0) >= 0.6:
         msg += f"✅ H4 Order Flow يدعم ({a['h4_of']})\n"
     msg += f"{sep}\n"
+    msg += f"⏰ {get_session_info()}\n"
     msg += f"⚡ ادخلي الحين — CISD اكتمل!\n"
     msg += f"📌 دخول Market عند: {a['entry']}\n"
     msg += f"🛑 ستوب: {a['sl']}\n"
@@ -1463,7 +1508,8 @@ def morning_star_msg(a):
     if extras: msg += "\n".join(extras) + "\n"
     if a.get("liq_pool"): msg += f"🎯 Liq Pool عند: {a['liq_pool']}\n"
     msg += news_txt
-    msg += f"{sep}\n⚡ نمط اكتمل — ادخلي الحين!\n"
+    msg += f"{sep}\n⏰ {get_session_info()}\n"
+    msg += f"⚡ نمط اكتمل — ادخلي الحين!\n"
     msg += f"📌 دخول Market عند: {a['entry']}\n"
     msg += f"🛑 ستوب: {a['sl']}\n"
     msg += f"✅ هدف 1: {a['tp1']}  (1:2)\n🚀 هدف 2: {a['tp2']}  (1:4)\n"
@@ -1498,7 +1544,8 @@ def setup_msg(a):
     msg  = f"{arrow} {direction} | {a['symbol']} | {a['tf']}\n{sep}\n"
     if extras: msg += "\n".join(extras) + "\n"
     msg += news_txt
-    msg += f"{sep}\n{action_header}\n📌 {order_type}\n"
+    msg += f"{sep}\n⏰ {get_session_info()}\n"
+    msg += f"{action_header}\n📌 {order_type}\n"
     msg += f"🛑 ستوب:  {a['sl']}  (تحت/فوق شمعة OB)\n"
     msg += f"✅ هدف 1: {a['tp1']}  (1:2)\n🚀 هدف 2: {a['tp2']}  (1:4)\n"
     msg += f"السعر الحالي: {round(a['current'], 4)}\n"
